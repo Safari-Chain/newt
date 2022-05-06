@@ -1,20 +1,27 @@
+use std::collections::BTreeMap;
 use std::fmt;
 use std::str::FromStr;
-use std::collections::BTreeMap;
+extern crate hex as hexfunc;
 
-use bitcoin::{Address, Amount, EcdsaSig, EcdsaSighashType, Network, OutPoint, PublicKey, PrivateKey, Script, Sighash, Transaction, Txid, TxOut, TxIn, Witness};
 use bitcoin::blockdata::{opcodes, script};
-use bitcoin::consensus::encode;
-use bitcoin::hashes::Hash;
+use bitcoin::consensus::{encode};
 use bitcoin::hashes::hex::{self, FromHex};
+use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{Message, Secp256k1, Signing, Verification};
 use bitcoin::util::address::{self, WitnessVersion};
 use bitcoin::util::amount::ParseAmountError;
-use bitcoin::util::bip32::{self, ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey, Fingerprint, IntoDerivationPath};
-use bitcoin::util::psbt::{self, Input, PartiallySignedTransaction, PsbtSighashType};
+use bitcoin::util::bip32::{
+    self, ChildNumber, DerivationPath, ExtendedPrivKey, ExtendedPubKey, Fingerprint,
+    IntoDerivationPath,
+};
+use bitcoin::util::psbt::{
+    self, serialize::Deserialize, Input, PartiallySignedTransaction, PsbtSighashType,
+};
 use bitcoin::util::sighash::SighashCache;
-
-
+use bitcoin::{
+    Address, Amount, EcdsaSig, EcdsaSighashType, Network, OutPoint, PrivateKey, PublicKey, Script,
+    Sighash, Transaction, TxIn, TxOut, Txid, Witness, AddressType,
+};
 
 type Result<T> = std::result::Result<T, Error>;
 type Psbt = PartiallySignedTransaction;
@@ -43,7 +50,8 @@ const NETWORK: Network = Network::Regtest;
 fn main() -> Result<()> {
     let secp = Secp256k1::new();
 
-    let (offline, fingerprint, account_0_xpub, input_xpub) = ColdStorage::new(&secp, EXTENDED_MASTER_PRIVATE_KEY)?;
+    let (offline, fingerprint, account_0_xpub, input_xpub) =
+        ColdStorage::new(&secp, EXTENDED_MASTER_PRIVATE_KEY)?;
 
     let online = WatchOnly::new(account_0_xpub, input_xpub, fingerprint);
 
@@ -54,16 +62,80 @@ fn main() -> Result<()> {
 
     let finalized = online.finalize_psbt(signed)?;
 
-
     // You can use `bt sendrawtransaction` to broadcast the extracted transaction.
     let tx = finalized.extract_tx();
-    tx.verify(|_| Some(previous_output())).expect("failed to verify transaction");
+    tx.verify(|_| Some(previous_output()))
+        .expect("failed to verify transaction");
 
-    let hex = encode::serialize_hex(&tx);
-    println!("You should now be able to broadcast the following transaction: \n\n{}", hex);
+    let hexstring = encode::serialize_hex(&tx);
+    println!(
+        "You should now be able to broadcast the following transaction: \n\n{}",
+        hexstring
+    );
+
+    let tx = decode_txn(hexstring);
+    let analysis_result = check_multi_script(tx);
+    println!("Analysis result: {:?}", analysis_result);
 
     Ok(())
 }
+
+#[derive(Debug)]
+struct AnalysisResult {
+    heuristic: String,
+    result: bool,
+    scripts: Vec<String>,
+    details: String,
+}
+
+/// Multi-script heuristic
+// 1.) create function to collect and decode transaction hex(es) and
+// convert it to a transaction struct
+fn decode_txn(hex_str: String) -> Transaction {
+    let tx_bytes = hexfunc::decode(hex_str).unwrap();
+
+    let tx = bitcoin::blockdata::transaction::Transaction::deserialize(&tx_bytes).unwrap();
+    println!("transaction details: {:#?}", &tx);
+    return tx;
+}
+
+// 2. create function that converts scripts to addresses
+fn script_to_addr(script: Script) -> address::Address {
+    let addr = address::Address::from_script(&script, NETWORK).unwrap();
+    addr
+}
+
+fn get_address_type(vouts: Vec<TxOut>) -> Vec<AddressType> {
+    let address_type = vouts.into_iter().map(|vout| {
+        let addr = script_to_addr(vout.script_pubkey.clone());
+        let addr_type = address::Address::address_type(&addr).unwrap();
+        return addr_type;
+    }).collect();
+    return address_type;
+}
+
+// 3. check for multi-script types using addresses
+fn check_multi_script(txn: Transaction) -> AnalysisResult {
+    let outputs = txn.output;
+    let addr_types = get_address_type(outputs.clone()).clone();
+    let first_addr_type = addr_types.get(0).unwrap();
+    let result = outputs.into_iter().all(|vout| {
+        let addr = script_to_addr(vout.script_pubkey.clone());
+        let addr_type = address::Address::address_type(&addr).unwrap();
+        return addr_type == first_addr_type.clone();
+    });
+
+   let script_types: Vec<String> = addr_types.into_iter().map(|addr| addr.to_string()).collect();
+   let details = if result { "Multi-script" } else { "Single-script" };
+    return AnalysisResult {
+        heuristic: String::from("Mixed script heuristics!"),
+        result,
+        scripts: script_types,
+        details: String::from(details),
+    };
+}
+
+
 
 // We cache the pubkeys for convenience because it requires a scep context to convert the private key.
 /// An example of an offline signer i.e., a cold-storage device.
@@ -78,13 +150,13 @@ struct ColdStorage {
 /// (wallet, fingerprint, account_0_xpub, input_utxo_xpub)
 type ExportData = (ColdStorage, Fingerprint, ExtendedPubKey, ExtendedPubKey);
 
-impl  ColdStorage {
+impl ColdStorage {
     /// Constructs a new `ColdStorage` signer.
     ///
     /// # Returns
     ///
     /// The newly created signer along with the data needed to configure a watch-only wallet.
-    fn new<C: Signing>(secp: &Secp256k1<C>, xpriv: &str)-> Result<ExportData> {
+    fn new<C: Signing>(secp: &Secp256k1<C>, xpriv: &str) -> Result<ExportData> {
         let master_xpriv = ExtendedPrivKey::from_str(xpriv)?;
         let master_xpub = ExtendedPubKey::from_priv(secp, &master_xpriv);
 
@@ -121,7 +193,11 @@ impl  ColdStorage {
     }
 
     /// Returns the private key required to sign `input` if we have it.
-    fn private_key_to_sign<C: Signing>(&self, secp: &Secp256k1<C>, input: &Input) -> Result<PrivateKey> {
+    fn private_key_to_sign<C: Signing>(
+        &self,
+        secp: &Secp256k1<C>,
+        input: &Input,
+    ) -> Result<PrivateKey> {
         match input.bip32_derivation.iter().nth(0) {
             Some((pk, (fingerprint, path))) => {
                 if *fingerprint != self.master_fingerprint() {
@@ -134,8 +210,7 @@ impl  ColdStorage {
                 }
 
                 Ok(sk)
-
-            },
+            }
             None => Err(Error::MissingBip32Derivation),
         }
     }
@@ -159,8 +234,16 @@ impl WatchOnly {
     ///
     /// The reason for importing the `input_xpub` is so one can use bitcoind to grab a valid input
     /// to verify the workflow presented in this file.
-    fn new(account_0_xpub: ExtendedPubKey, input_xpub: ExtendedPubKey, master_fingerprint: Fingerprint) -> Self {
-        WatchOnly { account_0_xpub, input_xpub, master_fingerprint }
+    fn new(
+        account_0_xpub: ExtendedPubKey,
+        input_xpub: ExtendedPubKey,
+        master_fingerprint: Fingerprint,
+    ) -> Self {
+        WatchOnly {
+            account_0_xpub,
+            input_xpub,
+            master_fingerprint,
+        }
     }
 
     /// Creates the PSBT, in BIP174 parlance this is the 'Creater'.
@@ -174,17 +257,15 @@ impl WatchOnly {
         let tx = Transaction {
             version: 2,
             lock_time: 0,
-            input: vec![
-                TxIn {
-                    previous_output: OutPoint {
-                        txid: Txid::from_hex(INPUT_UTXO_TXID)?,
-                        vout: INPUT_UTXO_VOUT,
-                    },
-                    script_sig: Script::new(),
-                    sequence: 0xFFFFFFFF, // Ignore nSequence.
-                    witness: Witness::default(),
+            input: vec![TxIn {
+                previous_output: OutPoint {
+                    txid: Txid::from_hex(INPUT_UTXO_TXID)?,
+                    vout: INPUT_UTXO_VOUT,
                 },
-            ],
+                script_sig: Script::new(),
+                sequence: 0xFFFFFFFF, // Ignore nSequence.
+                witness: Witness::default(),
+            }],
             output: vec![
                 TxOut {
                     value: to_amount.as_sat(),
@@ -193,7 +274,7 @@ impl WatchOnly {
                 TxOut {
                     value: change_amount.as_sat(),
                     script_pubkey: change_address.script_pubkey(),
-                }
+                },
             ],
         };
 
@@ -232,8 +313,14 @@ impl WatchOnly {
     /// "m/84h/0h/0h/1/0"). A real wallet would have access to the chain so could determine if an
     /// address has been used or not. We ignore this detail and just re-use the first change address
     /// without loss of generality.
-    fn change_address<C: Verification>(&self, secp: &Secp256k1<C>) -> Result<(PublicKey, Address, DerivationPath)> {
-        let path = vec![ChildNumber::from_normal_idx(1)?, ChildNumber::from_normal_idx(0)?];
+    fn change_address<C: Verification>(
+        &self,
+        secp: &Secp256k1<C>,
+    ) -> Result<(PublicKey, Address, DerivationPath)> {
+        let path = vec![
+            ChildNumber::from_normal_idx(1)?,
+            ChildNumber::from_normal_idx(0)?,
+        ];
         let derived = self.account_0_xpub.derive_pub(secp, &path)?;
 
         let pk = derived.to_pub();
@@ -273,7 +360,6 @@ impl WatchOnly {
 
         Ok(psbt)
     }
-
 }
 
 fn input_derivation_path() -> Result<DerivationPath> {
@@ -282,7 +368,8 @@ fn input_derivation_path() -> Result<DerivationPath> {
 }
 
 fn previous_output() -> TxOut {
-    let script_pubkey = Script::from_hex(INPUT_UTXO_SCRIPT_PUBKEY).expect("failed to parse input utxo scriptPubkey");
+    let script_pubkey = Script::from_hex(INPUT_UTXO_SCRIPT_PUBKEY)
+        .expect("failed to parse input utxo scriptPubkey");
     let amount = Amount::from_str(INPUT_UTXO_VALUE).expect("failed to parse input utxo value");
 
     TxOut {
@@ -330,9 +417,9 @@ fn sign_psbt<C: Signing>(
     // provided) matches the hash specified in the UTXO or the redeemScript, and the redeemScript
     // (if provided) matches the hash in the UTXO.
     if let Some(tx) = &psbt.inputs[input_index].witness_utxo {
-
         if let Some(witness_script) = &psbt.inputs[input_index].witness_script {
-            let script_pubkey = Script::new_witness_program(WitnessVersion::V0, &witness_script.wscript_hash());
+            let script_pubkey =
+                Script::new_witness_program(WitnessVersion::V0, &witness_script.wscript_hash());
             if script_pubkey != tx.script_pubkey {
                 match &psbt.inputs[input_index].redeem_script {
                     Some(redeem_script) => {
@@ -362,14 +449,20 @@ fn sign_psbt<C: Signing>(
     final_signature.push(sighash_type.to_u32() as u8);
 
     let mut map = BTreeMap::new();
-    map.insert(pubkey, EcdsaSig::from_slice(&final_signature).map_err(|_| SignError::Ecdsa)?);
+    map.insert(
+        pubkey,
+        EcdsaSig::from_slice(&final_signature).map_err(|_| SignError::Ecdsa)?,
+    );
     psbt.inputs[input_index].partial_sigs = map;
 
     Ok(())
 }
 
 // Copied directly from `impl ComputeSighash for Legacy` in `bdk`.
-fn legacy_sighash(psbt: &Psbt, input_index: usize) -> std::result::Result<(Sighash, EcdsaSighashType), SignError> {
+fn legacy_sighash(
+    psbt: &Psbt,
+    input_index: usize,
+) -> std::result::Result<(Sighash, EcdsaSighashType), SignError> {
     if input_index >= psbt.inputs.len() || input_index >= psbt.unsigned_tx.input.len() {
         return Err(SignError::InputIndexOutOfRange);
     }
@@ -377,7 +470,9 @@ fn legacy_sighash(psbt: &Psbt, input_index: usize) -> std::result::Result<(Sigha
     let psbt_input = &psbt.inputs[input_index];
     let tx_input = &psbt.unsigned_tx.input[input_index];
 
-    let sighash = psbt_input.sighash_type.unwrap_or(PsbtSighashType::from(EcdsaSighashType::All));
+    let sighash = psbt_input
+        .sighash_type
+        .unwrap_or(PsbtSighashType::from(EcdsaSighashType::All));
     let script = match psbt_input.redeem_script {
         Some(ref redeem_script) => redeem_script.clone(),
         None => {
@@ -402,7 +497,10 @@ fn legacy_sighash(psbt: &Psbt, input_index: usize) -> std::result::Result<(Sigha
 }
 
 // Copied directly from `impl ComputeSighash for Segwitv0` in `bdk`.
-fn segwit_v0_sighash(psbt: &Psbt, input_index: usize) -> std::result::Result<(Sighash, EcdsaSighashType), SignError> {
+fn segwit_v0_sighash(
+    psbt: &Psbt,
+    input_index: usize,
+) -> std::result::Result<(Sighash, EcdsaSighashType), SignError> {
     if input_index >= psbt.inputs.len() || input_index >= psbt.unsigned_tx.input.len() {
         return Err(SignError::InputIndexOutOfRange);
     }
@@ -410,7 +508,9 @@ fn segwit_v0_sighash(psbt: &Psbt, input_index: usize) -> std::result::Result<(Si
     let psbt_input = &psbt.inputs[input_index];
     let tx_input = &psbt.unsigned_tx.input[input_index];
 
-    let sighash = psbt_input.sighash_type.unwrap_or(PsbtSighashType::from(EcdsaSighashType::All));
+    let sighash = psbt_input
+        .sighash_type
+        .unwrap_or(PsbtSighashType::from(EcdsaSighashType::All));
 
     // Always try first with the non-witness utxo.
     let utxo = if let Some(prev_tx) = &psbt_input.non_witness_utxo {
@@ -453,13 +553,15 @@ fn segwit_v0_sighash(psbt: &Psbt, input_index: usize) -> std::result::Result<(Si
     };
 
     Ok((
-        SighashCache::new(&psbt.unsigned_tx).segwit_signature_hash(
-            input_index,
-            &script,
-            value,
-            sighash.ecdsa_hash_ty().map_err(|_| SignError::Ecdsa)?,
-        ).map_err(|_| SignError::Sighash)?,
-        sighash.ecdsa_hash_ty().map_err(|_| SignError::Ecdsa)?
+        SighashCache::new(&psbt.unsigned_tx)
+            .segwit_signature_hash(
+                input_index,
+                &script,
+                value,
+                sighash.ecdsa_hash_ty().map_err(|_| SignError::Ecdsa)?,
+            )
+            .map_err(|_| SignError::Sighash)?,
+        sighash.ecdsa_hash_ty().map_err(|_| SignError::Ecdsa)?,
     ))
 }
 
