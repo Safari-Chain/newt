@@ -79,7 +79,7 @@ pub fn check_multi_script(txn: Transaction, txn_in: String) -> AnalysisResult {
         if input_script_type == *output_script_type {
             compare_inp_out_addrtype = true;
         }
-        if first_addr_type.to_string() == *output_script_type {
+        if first_addr_type.to_string() != *output_script_type {
             compare_vouts = true;
         }
     }
@@ -105,16 +105,16 @@ mod tests {
     use super::*;
     #[test]
     fn test_check_multiscript() {
-        let tx_hex_str = String::from("0200000001d79d2c25924044abb3692ed921dde899178db39897f3205074251f0e9f8e55710000000000ffffffff01f0e90f2401000000160014885ba915d7135763d23b3cbcb5a5486f9f6acb5900000000");
+        let tx_hex = String::from("010000000001014c2686e762e0b260e7e146b5c15978c0b9366d80497b030390d91dc4ecf88f460100000000ffffffff02c4d600000000000017a914b607b1d108813cd10ae75e7b39305656ffea9523874b9b010000000000160014d86fe2f77cb04b0024a3783dc04b705b62c92f4502483045022100ce0ca2e3615c445d5fdedb4a289c7afcee303ef757c1539149a30a23b61f7c6102206a7d5a128224373213e778969d5a9428a52994f9e20ccac9d95e355e2230fd66012102b0747b954d5441f6df0b3daf2ca6bcbab7b6f3f42eda613789edd9d3a2dc40d800000000");
+        let prev_tx_hex = String::from("010000000001014c2686e762e0b260e7e146b5c15978c0b9366d80497b030390d91dc4ecf88f460100000000ffffffff02c4d600000000000017a914b607b1d108813cd10ae75e7b39305656ffea9523874b9b010000000000160014d86fe2f77cb04b0024a3783dc04b705b62c92f4502483045022100ce0ca2e3615c445d5fdedb4a289c7afcee303ef757c1539149a30a23b61f7c6102206a7d5a128224373213e778969d5a9428a52994f9e20ccac9d95e355e2230fd66012102b0747b954d5441f6df0b3daf2ca6bcbab7b6f3f42eda613789edd9d3a2dc40d80000000001000000000101cb1c255d626dfbaea3557588725c779ebac6469e2c86a1d8647e6768751920100100000000ffffffff0259581000000000001600144c4afd82a9872b87836f0a4ee60250a0b857d0eaeb81020000000000160014ed7118d50af8e7e1f388d94972c23d5bb471c265024730440220199e11cffdc827ca91852416aa3263bdfadd95cd76c400f81e236a5cabcce18502202a4fe3cb84fe318d0c886e488d0b5ff099c6adfaa4bfce53a8d94bdb759dc1330121026c5f4446e09a7069f1b2bc35baf6a0ad9d7ed257fce5eac027a1c8466023fd5800000000");
         let expected_result = AnalysisResult {
             heuristic: Heuristics::Multiscript,
             result: true,   
-            details: String::from("Single-script"),
+            details: String::from("Multi-script"),
         };
 
-        let tx = decode_txn(tx_hex_str.clone());
-        //TODO: get hex for input transaction
-        let analysis_result = check_multi_script(tx, tx_hex_str);
+        let tx = decode_txn(tx_hex.clone());
+        let analysis_result = check_multi_script(tx, prev_tx_hex);
 
         assert_eq!(expected_result.heuristic, analysis_result.heuristic);
         assert_eq!(expected_result.result, analysis_result.result);
