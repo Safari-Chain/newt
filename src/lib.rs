@@ -1,6 +1,6 @@
 extern crate hex as hexfunc;
 
-use bitcoin::util::address;
+use bitcoin::util::address::{self, Address};
 use bitcoin::util::psbt::serialize::Deserialize;
 use bitcoin::{AddressType, Network, Script, Transaction, TxOut};
 
@@ -9,6 +9,7 @@ const NETWORK: Network = Network::Regtest;
 #[derive(Debug, Eq, PartialEq)]
 pub enum Heuristics {
     Multiscript,
+    AddressReuse,
 }
 
 #[derive(Debug)]
@@ -49,7 +50,6 @@ fn get_address_type(vouts: Vec<TxOut>) -> Vec<AddressType> {
         .collect();
     return address_type;
 }
-
 
 fn parse_input_tx(txn_in: String, vout_index: usize) -> AddressType {
     let tx = decode_txn(txn_in);
@@ -98,6 +98,52 @@ pub fn check_multi_script(txn: Transaction, txn_in: String) -> AnalysisResult {
     };
 }
 
+pub fn check_address_reuse(txn: Transaction, prev_txn_hex: String) -> AnalysisResult {
+    //for every address used in the inputs i.e outpts of prev_txn
+    //check if that address appears in the outputs of txn
+    let prev_txn = decode_txn(prev_txn_hex);
+    let prev_txn_outputs = prev_txn.output;
+    let input_indexes: Vec<u32> = txn
+        .input
+        .iter()
+        .map(|tx_in| tx_in.previous_output.vout)
+        .collect();
+    let mut input_addrs = Vec::new();
+    let output_addrs: Vec<Address> = txn
+        .output
+        .iter()
+        .map(|tx_out| {
+            return script_to_addr(tx_out.script_pubkey.clone());
+        })
+        .collect();
+
+    for index in input_indexes {
+        //get the corresponding output in the previous transaction.
+        let output_script = prev_txn_outputs[index as usize].script_pubkey.clone();
+
+        //from this output, get the address
+        let input_addr = script_to_addr(output_script);
+
+        //store this address in vector
+        input_addrs.push(input_addr);
+    }
+
+    let mut result: bool = false;
+
+    for input_addr in input_addrs.iter() {
+        for out_addr in output_addrs.iter() {
+            if input_addr == out_addr {
+                result = true;
+            }
+        }
+    }
+
+    return AnalysisResult {
+        heuristic: Heuristics::AddressReuse,
+        result,
+        details: String::from("Input address reuse in outputs"),
+    };
+}
 
 #[cfg(test)]
 mod tests {
@@ -109,7 +155,7 @@ mod tests {
         let prev_tx_hex = String::from("010000000001014c2686e762e0b260e7e146b5c15978c0b9366d80497b030390d91dc4ecf88f460100000000ffffffff02c4d600000000000017a914b607b1d108813cd10ae75e7b39305656ffea9523874b9b010000000000160014d86fe2f77cb04b0024a3783dc04b705b62c92f4502483045022100ce0ca2e3615c445d5fdedb4a289c7afcee303ef757c1539149a30a23b61f7c6102206a7d5a128224373213e778969d5a9428a52994f9e20ccac9d95e355e2230fd66012102b0747b954d5441f6df0b3daf2ca6bcbab7b6f3f42eda613789edd9d3a2dc40d80000000001000000000101cb1c255d626dfbaea3557588725c779ebac6469e2c86a1d8647e6768751920100100000000ffffffff0259581000000000001600144c4afd82a9872b87836f0a4ee60250a0b857d0eaeb81020000000000160014ed7118d50af8e7e1f388d94972c23d5bb471c265024730440220199e11cffdc827ca91852416aa3263bdfadd95cd76c400f81e236a5cabcce18502202a4fe3cb84fe318d0c886e488d0b5ff099c6adfaa4bfce53a8d94bdb759dc1330121026c5f4446e09a7069f1b2bc35baf6a0ad9d7ed257fce5eac027a1c8466023fd5800000000");
         let expected_result = AnalysisResult {
             heuristic: Heuristics::Multiscript,
-            result: true,   
+            result: true,
             details: String::from("Multi-script"),
         };
 
