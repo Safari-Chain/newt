@@ -1,9 +1,7 @@
-
-
-use bitcoin::util::address::{self, Address};
 use bitcoin::consensus::deserialize;
-use bitcoin::{AddressType, Network, Script, Transaction, TxOut};
 use bitcoin::hashes::hex::FromHex;
+use bitcoin::util::address::{self, Address};
+use bitcoin::{AddressType, Network, Script, Transaction, TxOut};
 
 extern crate hex as hexfunc;
 
@@ -15,6 +13,7 @@ const NETWORK: Network = Network::Regtest;
 pub enum Heuristics {
     Multiscript,
     AddressReuse,
+    RoundNumber,
 }
 
 #[derive(Debug)]
@@ -35,7 +34,7 @@ fn decode_txn(hex_str: String) -> Transaction {
     let tx_bytes = Vec::from_hex(&hex_str).unwrap();
     let tx = deserialize(&tx_bytes).unwrap();
     //let tx = bitcoin::util::psbt::serialize::Deserialize::deserialize(&tx_bytes).unwrap();
-    
+
     println!("transaction details: {:#?}", &tx);
     return tx;
 }
@@ -112,7 +111,7 @@ pub fn check_address_reuse(txn: Transaction, prev_txns: HashMap<String, String>)
         //traverse the inputs
         //for every Outpoint aka (txid, vout), get transaction hex
         //in hash map, decode it. Get the output corresponding to the
-        //vout from the outpoint. Extract the Address from this and 
+        //vout from the outpoint. Extract the Address from this and
         //store it in an input address vector.
         let input_index = input.previous_output.vout;
         let tx_id = input.previous_output.txid.to_string();
@@ -122,10 +121,8 @@ pub fn check_address_reuse(txn: Transaction, prev_txns: HashMap<String, String>)
         let vout_output = decoded_tx.output[input_index as usize].clone();
         let input_addr = script_to_addr(vout_output.script_pubkey.clone());
         input_addrs.push(input_addr)
-
-
     }
-    
+
     let output_addrs: Vec<Address> = txn
         .output
         .iter()
@@ -151,11 +148,34 @@ pub fn check_address_reuse(txn: Transaction, prev_txns: HashMap<String, String>)
     };
 }
 
+pub fn check_round_number(tx: Transaction) -> AnalysisResult {
+    //assuming payments have only 2 decimal places and only applies
+    //to simple spend
+    const SAT_PER_BTC: f64 = 100_000_000.0;
+
+    let output_values: Vec<f64> = tx.output.iter().map(|out| out.value as f64 / SAT_PER_BTC).collect();
+    
+    let mut round_number:f64 = 0.0;
+    for num in output_values {
+        if (num * 1000.0).floor() as u64 % 10 == 0 {
+            round_number = num
+        }
+    }
+
+    let result = round_number != 0.0;
+
+    return AnalysisResult {
+        heuristic: Heuristics::RoundNumber,
+        result,
+        details: String::from("Found round number in outputs"),
+    };
+}
+
 #[cfg(test)]
 mod tests {
 
     use super::*;
-     #[test]
+    #[test]
     fn test_check_multiscript() {
         let tx_hex = String::from("010000000001014c2686e762e0b260e7e146b5c15978c0b9366d80497b030390d91dc4ecf88f460100000000ffffffff02c4d600000000000017a914b607b1d108813cd10ae75e7b39305656ffea9523874b9b010000000000160014d86fe2f77cb04b0024a3783dc04b705b62c92f4502483045022100ce0ca2e3615c445d5fdedb4a289c7afcee303ef757c1539149a30a23b61f7c6102206a7d5a128224373213e778969d5a9428a52994f9e20ccac9d95e355e2230fd66012102b0747b954d5441f6df0b3daf2ca6bcbab7b6f3f42eda613789edd9d3a2dc40d800000000");
         let prev_tx_hex = String::from("01000000000101cb1c255d626dfbaea3557588725c779ebac6469e2c86a1d8647e6768751920100100000000ffffffff0259581000000000001600144c4afd82a9872b87836f0a4ee60250a0b857d0eaeb81020000000000160014ed7118d50af8e7e1f388d94972c23d5bb471c265024730440220199e11cffdc827ca91852416aa3263bdfadd95cd76c400f81e236a5cabcce18502202a4fe3cb84fe318d0c886e488d0b5ff099c6adfaa4bfce53a8d94bdb759dc1330121026c5f4446e09a7069f1b2bc35baf6a0ad9d7ed257fce5eac027a1c8466023fd5800000000");
@@ -183,6 +203,9 @@ mod tests {
 
         assert_eq!(analysis_result.heuristic, Heuristics::AddressReuse);
         assert_eq!(analysis_result.result, true);
-        assert_eq!(analysis_result.details, String::from("Input address reuse in outputs"))
+        assert_eq!(
+            analysis_result.details,
+            String::from("Input address reuse in outputs")
+        )
     }
 }
