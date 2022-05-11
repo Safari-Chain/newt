@@ -5,6 +5,7 @@ use bitcoin::{AddressType, Network, Script, Transaction, TxOut};
 
 extern crate hex as hexfunc;
 
+use permute;
 use std::collections::HashMap;
 
 const NETWORK: Network = Network::Regtest;
@@ -15,6 +16,7 @@ pub enum Heuristics {
     AddressReuse,
     RoundNumber,
     Coinjoin,
+    UnnecessaryInput
 }
 
 #[derive(Debug)]
@@ -34,7 +36,6 @@ fn decode_txn(hex_str: String) -> Transaction {
     return tx;
 }
 
-// 2. create function that converts scripts to addresses
 fn script_to_addr(script: Script) -> address::Address {
     let addr = address::Address::from_script(&script, NETWORK).unwrap();
     addr
@@ -59,8 +60,8 @@ fn parse_input_tx(txn_in: String, vout_index: usize) -> AddressType {
     return addr_type;
 }
 
-// 3. check for multi-script types using addresses
-pub fn check_multi_script(txn: Transaction, txn_in: String) -> AnalysisResult {
+pub fn check_multi_script(txn_hex: String, txn_in: String) -> AnalysisResult {
+    let txn = decode_txn(txn_hex);
     let tx_in = txn.input.get(0).unwrap().clone();
     let vout_index = tx_in.previous_output.vout;
 
@@ -99,7 +100,8 @@ pub fn check_multi_script(txn: Transaction, txn_in: String) -> AnalysisResult {
     };
 }
 
-pub fn check_address_reuse(txn: Transaction, prev_txns: HashMap<String, String>) -> AnalysisResult {
+pub fn check_address_reuse(txn_hex: String, prev_txns: HashMap<String, String>) -> AnalysisResult {
+    let txn = decode_txn(txn_hex);
     let mut input_addrs = Vec::new();
 
     for input in txn.input.iter() {
@@ -204,6 +206,64 @@ pub fn check_equaloutput_coinjoin(coinjoin_tx_hex: String) -> AnalysisResult {
     };
 }
 
+pub fn check_unnecessary_input(curr_tx_hex: String, prev_txns: HashMap<String, String>) -> AnalysisResult {
+    // 1. check if total number of output is two
+    // 2. get the value of each input and output in the transaction
+    // 3. get the different permutations of the inputs
+    // 4. For each output, check for unnecessary inputs using the permutation
+    const SAT_PER_BTC: f64 = 100_000_000.0;
+
+    let tx = decode_txn(curr_tx_hex);
+    let outputs = tx.output;
+    // let inputs = tx.input;
+    let mut result = false;
+
+    if outputs.len() == 2 {
+        let mut input_values = Vec::new();
+        let output_values: Vec<f64> = outputs
+            .iter()
+            .map(|out| out.value as f64 / SAT_PER_BTC)
+            .collect();
+
+        for input in tx.input {
+            let input_index = input.previous_output.vout;
+            let tx_id = input.previous_output.txid.to_string();
+            let tx_hex = prev_txns.get(&tx_id).unwrap();
+            let decoded_tx = decode_txn(tx_hex.to_owned());
+            let vout_output = decoded_tx.output[input_index as usize].clone();
+            let vout_output_value = vout_output.value as f64 / SAT_PER_BTC;
+            input_values.push(vout_output_value);
+        }
+
+        let permutated_inputs = permute::permute(input_values.clone());
+        println!("permuted inputs: {:#?}", permutated_inputs);
+        let mut assert_unnecessary_inputs: Vec<bool> = vec![false; output_values.len()];
+
+        for (output_index, &output) in output_values.iter().enumerate() {
+            for values in permutated_inputs.iter() {
+                let mut sum_permuted_values: f64 = 0.0;
+                for (value_index, &value) in values.iter().enumerate() {
+                    sum_permuted_values += value;
+                    if sum_permuted_values >= output {
+                        if value_index < (values.len() - 1) {
+                            assert_unnecessary_inputs[output_index] = true;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        result = assert_unnecessary_inputs.iter().all(|&x| x);
+    }
+
+    return AnalysisResult {
+        heuristic: Heuristics::UnnecessaryInput,
+        result,
+        details: String::from("Found unnecessary inputs in transaction"),
+    };
+}
+
 #[cfg(test)]
 mod tests {
 
@@ -217,9 +277,7 @@ mod tests {
             result: true,
             details: String::from("Multi-script"),
         };
-
-        let tx = decode_txn(tx_hex.clone());
-        let analysis_result = check_multi_script(tx, prev_tx_hex);
+        let analysis_result = check_multi_script(tx_hex, prev_tx_hex);
 
         assert_eq!(expected_result.heuristic, analysis_result.heuristic);
         assert_eq!(expected_result.result, analysis_result.result);
@@ -230,7 +288,7 @@ mod tests {
     fn test_check_address_reuse() {
         let mut prev_txns = HashMap::new();
         prev_txns.insert(String::from("1c3ea699a24a17dd99533837e5a9cde84e0517033cf1deba18e9baca53c305d2"), String::from("010000000195d76b18853ab39712192be5f90bf350302eafa0c51067ca59af7bcb183b4025090000006b483045022100ef3c03a1e200a51da0df7117f0a7bcdef3c72b6c269be5123b404e5999b3a00002205e64a0392bd4dc2c7bc32f4a7978ddfbb440e0d9e504a71404fd8e05f88e3db001210256ba3dec93e8fda4485a8dea428d94aa968b509ec4ac430bf0de5f9027f988c8ffffffff0a09f006000000000017a91415adeb31f7415cbabafd07af8d90875d350655bc87989b58000000000017a914f384976b6e07df4c9bd7a212995ac4509e6c7d4787bc9b0c00000000001976a9149fdd37db4058fce4eeff3fca4bc5551590c9187d88ac5e163500000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac806f4a0c000000001976a914e16873335e04467e02d8eb143f1302c685b8f31f88ac88e55a000000000017a9149907fae571a857e66ff83c4d70fa82e1286b06be876c796202000000001976a914981476e141da8d847b814b832e6402cd7338c6d188ac5896ec01000000001976a914c288197330741bc85587f4f00ee48c66e3be319488ac7f8446060000000017a9145d76ef27663a41a4a054d00886367e4a56e24e06874ffe9cc3000000001976a914e5fc50dec180de9a3c1c8f0309506321ae88def988ac00000000"));
-        let curr_tx = decode_txn(String::from("0100000001d205c353cabae918badef13c0317054ee8cda9e537385399dd174aa299a63e1c030000006b483045022100af114bd31e351353f25b7260247ae1459f92697e50adef10ac2026182c6eceb2022023defe45fb7dfcdcca2e238b3566184fbf1ffe27e7c2e424df57e602f43e5c49012102c50332f6f13c902b397d1f84ad822ae5209bff1867042f466cd891024fdfaa8dffffffff02c0c62d00000000001976a9141323f3d1e32b79d8fe23d61019aff104884bff2a88ac57ac0600000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac00000000"));
+        let curr_tx = String::from("0100000001d205c353cabae918badef13c0317054ee8cda9e537385399dd174aa299a63e1c030000006b483045022100af114bd31e351353f25b7260247ae1459f92697e50adef10ac2026182c6eceb2022023defe45fb7dfcdcca2e238b3566184fbf1ffe27e7c2e424df57e602f43e5c49012102c50332f6f13c902b397d1f84ad822ae5209bff1867042f466cd891024fdfaa8dffffffff02c0c62d00000000001976a9141323f3d1e32b79d8fe23d61019aff104884bff2a88ac57ac0600000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac00000000");
         println!("{:#?}", curr_tx);
         let analysis_result = check_address_reuse(curr_tx, prev_txns);
 
@@ -261,6 +319,21 @@ mod tests {
 
         assert_eq!(analysis_result.heuristic, Heuristics::Coinjoin);
         assert!(analysis_result.result);
-        assert_eq!(analysis_result.details,  String::from("Found Equal Outputs Coinjoin"));
+        assert_eq!(
+            analysis_result.details,
+            String::from("Found Equal Outputs Coinjoin")
+        );
+    }
+
+    #[test]
+    fn test_check_unnecessary_inputs() {
+        let mut prev_txns = HashMap::new();
+        prev_txns.insert(String::from("1c3ea699a24a17dd99533837e5a9cde84e0517033cf1deba18e9baca53c305d2"), String::from("010000000195d76b18853ab39712192be5f90bf350302eafa0c51067ca59af7bcb183b4025090000006b483045022100ef3c03a1e200a51da0df7117f0a7bcdef3c72b6c269be5123b404e5999b3a00002205e64a0392bd4dc2c7bc32f4a7978ddfbb440e0d9e504a71404fd8e05f88e3db001210256ba3dec93e8fda4485a8dea428d94aa968b509ec4ac430bf0de5f9027f988c8ffffffff0a09f006000000000017a91415adeb31f7415cbabafd07af8d90875d350655bc87989b58000000000017a914f384976b6e07df4c9bd7a212995ac4509e6c7d4787bc9b0c00000000001976a9149fdd37db4058fce4eeff3fca4bc5551590c9187d88ac5e163500000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac806f4a0c000000001976a914e16873335e04467e02d8eb143f1302c685b8f31f88ac88e55a000000000017a9149907fae571a857e66ff83c4d70fa82e1286b06be876c796202000000001976a914981476e141da8d847b814b832e6402cd7338c6d188ac5896ec01000000001976a914c288197330741bc85587f4f00ee48c66e3be319488ac7f8446060000000017a9145d76ef27663a41a4a054d00886367e4a56e24e06874ffe9cc3000000001976a914e5fc50dec180de9a3c1c8f0309506321ae88def988ac00000000"));
+        let curr_tx_hex = String::from("0100000001d205c353cabae918badef13c0317054ee8cda9e537385399dd174aa299a63e1c030000006b483045022100af114bd31e351353f25b7260247ae1459f92697e50adef10ac2026182c6eceb2022023defe45fb7dfcdcca2e238b3566184fbf1ffe27e7c2e424df57e602f43e5c49012102c50332f6f13c902b397d1f84ad822ae5209bff1867042f466cd891024fdfaa8dffffffff02c0c62d00000000001976a9141323f3d1e32b79d8fe23d61019aff104884bff2a88ac57ac0600000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac00000000");
+        let analysis_result = check_unnecessary_input(curr_tx_hex, prev_txns);
+
+        assert_eq!(analysis_result.heuristic, Heuristics::UnnecessaryInput);
+        assert_eq!(analysis_result.result, false);
+        assert_eq!(analysis_result.details, String::from("Found unnecessary inputs in transaction"));
     }
 }
