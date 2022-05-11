@@ -171,8 +171,8 @@ pub fn check_round_number(tx_hex: String) -> AnalysisResult {
     };
 }
 
-pub fn check_equaloutput_coinjoin(tx_hex: String) -> AnalysisResult {
-    let tx = decode_txn(tx_hex);
+pub fn check_equaloutput_coinjoin(coinjoin_tx_hex: String) -> AnalysisResult {
+    let tx = decode_txn(coinjoin_tx_hex);
     // Assumption: we have a coinjoin transaction
     // check the output for equal payment amounts
     // return an analysis result
@@ -183,7 +183,6 @@ pub fn check_equaloutput_coinjoin(tx_hex: String) -> AnalysisResult {
         .iter()
         .map(|out| out.value as f64 / SAT_PER_BTC)
         .collect();
-    // let first_output_value = output_values.get(0).unwrap();
     let mut result = false;
     for (index, &value) in output_values.iter().enumerate() {
         for (i, &v) in output_values.iter().enumerate() {
@@ -198,7 +197,11 @@ pub fn check_equaloutput_coinjoin(tx_hex: String) -> AnalysisResult {
         }
     }
 
-    return AnalysisResult { heuristic: Heuristics::Coinjoin, result, details: String::from("Found Equal Outputs Coinjoin") };
+    return AnalysisResult {
+        heuristic: Heuristics::Coinjoin,
+        result,
+        details: String::from("Found Equal Outputs Coinjoin"),
+    };
 }
 
 #[cfg(test)]
@@ -232,7 +235,7 @@ mod tests {
         let analysis_result = check_address_reuse(curr_tx, prev_txns);
 
         assert_eq!(analysis_result.heuristic, Heuristics::AddressReuse);
-        assert_eq!(analysis_result.result, true);
+        assert!(analysis_result.result);
         assert_eq!(
             analysis_result.details,
             String::from("Input address reuse in outputs")
@@ -244,10 +247,20 @@ mod tests {
         let analysis_result = check_round_number(tx_hex);
 
         assert_eq!(analysis_result.heuristic, Heuristics::RoundNumber);
-        assert_eq!(analysis_result.result, true);
+        assert!(analysis_result.result);
         assert_eq!(
             analysis_result.details,
             String::from("Found round number in outputs")
         );
+    }
+
+    #[test]
+    fn test_check_equaloutput_coinjoin() {
+        let coinjoin_tx_hex = String::from("01000000000105f1ecbda8223b6cc28bd37f417f43fd8fa462dfede0e6385a18d5ffa430cbb70a0400000000ffffffff0c7b737926e5a21ceec19d20a630b80eb10e7e382efda4544e6ad1730f86b26d0300000000ffffffff679aafd80a2fc306a23d7c1a9bb0cf0d4d4c94d88f79243e8232d7b063e9ed760900000000ffffffffe30fa68d80a9533e843132ca2b8f6de641cbdb110d60e92a3add2ce96ac8af7b0100000000ffffffffae66da81e04dd25798394fb93161b9837e69034390a260df2d2959bc035309870300000000ffffffff0540420f000000000016001407539ac33dfcf782804085a13be4041a944cff1640420f00000000001600142de3d3be2b2cd8b00da7c9e46b645db3c136679d40420f00000000001600144668edd866cf4d9e1cd137c367b7c3f85158d21640420f00000000001600147f6f0faa9ad593e2ab53e3c889c69e19a36eef5d40420f0000000000160014e8abfe7ccf2048fbd7611b4b325557ac55708ece02483045022100c23d6bf44eb2589eca610268dc8f8f243dc8a6870d8ae1718c4f05210943d69a022064fd5ab81fb9dd831e3c4834787a8a8f06a5573f8f43b312ac8080877f8372850121023a21e68d0fa1c4ba8888f02ee40e8a9935d95a744c3d40d7f2d9f99a879be0f202483045022100dd779341477ef8581495bf937893c70890b0ebb3d02af796e57020fd64d1b33c0220268551e07d0fa2187d715a918a0784d9cc5cb0cdcae76125e48486af39b5ec59012103cccd7c5db03f9487f54c79fc379900238e2d55cd168585739a0423b308705c0202483045022100f782923ca6a3be8ddd5d6a3cd0a20df3d852b5edac5f5764c23156f509faa258022054d3b363a6a4582974e71ba6bd514236b5057b9fd4ca2894e0406e62fbeac9f1012102dd008796933c9d52f97a602338224b78ad1b1f82c62d56765869e11379817a9e02483045022100d7a255b4ff94d5f18851561f8ea79db3be6d076cd3e975e610f17e943484cb0e02205ee4e8f4aefe09bf40c34d8a9fe3a66b35148ab322a63ee0b34e168e3723f1c601210367b386171c9ccd683ef16b226f6ca4a8327f6f67027851013e05c6ffcf06531202473044022076cd0cc231afce90ce6ef1b716d273d215d37dc69aa1b6201af02f326f22f6cf02206a1ca8909a0649a7addf63f73c4c405abc7fc8f4b381828d78185bd83ecbdd590121023c899fd40d457014ecd3b1cedb10c48f545b81304e17bc0c9888756e105aa5a700000000");
+        let analysis_result = check_equaloutput_coinjoin(coinjoin_tx_hex);
+
+        assert_eq!(analysis_result.heuristic, Heuristics::Coinjoin);
+        assert!(analysis_result.result);
+        assert_eq!(analysis_result.details,  String::from("Found Equal Outputs Coinjoin"));
     }
 }
