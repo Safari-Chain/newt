@@ -14,6 +14,7 @@ pub enum Heuristics {
     Multiscript,
     AddressReuse,
     RoundNumber,
+    Coinjoin,
 }
 
 #[derive(Debug)]
@@ -148,9 +149,13 @@ pub fn check_round_number(tx_hex: String) -> AnalysisResult {
     const SAT_PER_BTC: f64 = 100_000_000.0;
     let tx = decode_txn(tx_hex);
 
-    let output_values: Vec<f64> = tx.output.iter().map(|out| out.value as f64 / SAT_PER_BTC).collect();
-    
-    let mut round_number:f64 = 0.0;
+    let output_values: Vec<f64> = tx
+        .output
+        .iter()
+        .map(|out| out.value as f64 / SAT_PER_BTC)
+        .collect();
+
+    let mut round_number: f64 = 0.0;
     for num in output_values {
         if (num * 10000.0).floor() as u64 % 10 == 0 {
             round_number = num
@@ -166,21 +171,34 @@ pub fn check_round_number(tx_hex: String) -> AnalysisResult {
     };
 }
 
-pub fn check_equaloutput_coinjoin(tx_hex: String) {
+pub fn check_equaloutput_coinjoin(tx_hex: String) -> AnalysisResult {
     let tx = decode_txn(tx_hex);
     // Assumption: we have a coinjoin transaction
     // check the output for equal payment amounts
     // return an analysis result
     const SAT_PER_BTC: f64 = 100_000_000.0;
 
-    let output_values: Vec<f64> = tx.output.iter().map(|out| out.value as f64 / SAT_PER_BTC).collect();
+    let output_values: Vec<f64> = tx
+        .output
+        .iter()
+        .map(|out| out.value as f64 / SAT_PER_BTC)
+        .collect();
     // let first_output_value = output_values.get(0).unwrap();
+    let mut result = false;
     for (index, &value) in output_values.iter().enumerate() {
         for (i, &v) in output_values.iter().enumerate() {
-            if index == i {continue;}
-            
+            if index == i {
+                continue;
+            }
+
+            if value == v {
+                result = true;
+                break;
+            }
         }
     }
+
+    return AnalysisResult { heuristic: Heuristics::Coinjoin, result, details: String::from("Found Equal Outputs Coinjoin") };
 }
 
 #[cfg(test)]
@@ -224,9 +242,12 @@ mod tests {
     fn test_check_round_number() {
         let tx_hex = String::from("0200000000010123c46091ab735545c6fa00a7db247b35cdc14d97639b9343598ede9d09ce26ea010000001716001442a9f77d14545b2a06ee2650bf39b32b0a0cb6cfffffffff02406603010000000017a914664fd79cf47e3d8525a13e167b68e5cfbb75382587111ff6260000000017a9140abc9d109b9b6bf6facc982783e9e3e12fa86cea870247304402207f1331495a9cf7658d336edb953eb0c138ca52769daebae52b76090066e92a9402202866dfd1edf4ac60c1d6d1cbf7f0e869a64d47cef8954ce7fd92eb6a641b7b08012102131da3e1de41815594d0e40e96c04d8b6b19f4f95af76f95c6cf3fdfa2563dc600000000");
         let analysis_result = check_round_number(tx_hex);
-       
+
         assert_eq!(analysis_result.heuristic, Heuristics::RoundNumber);
         assert_eq!(analysis_result.result, true);
-        assert_eq!(analysis_result.details, String::from("Found round number in outputs"));
+        assert_eq!(
+            analysis_result.details,
+            String::from("Found round number in outputs")
+        );
     }
 }
