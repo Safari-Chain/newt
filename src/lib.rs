@@ -148,16 +148,17 @@ pub fn check_address_reuse(txn: Transaction, prev_txns: HashMap<String, String>)
     };
 }
 
-pub fn check_round_number(tx: Transaction) -> AnalysisResult {
+pub fn check_round_number(tx_hex: String) -> AnalysisResult {
     //assuming payments have only 2 decimal places and only applies
     //to simple spend
     const SAT_PER_BTC: f64 = 100_000_000.0;
+    let tx = decode_txn(tx_hex);
 
     let output_values: Vec<f64> = tx.output.iter().map(|out| out.value as f64 / SAT_PER_BTC).collect();
     
     let mut round_number:f64 = 0.0;
     for num in output_values {
-        if (num * 1000.0).floor() as u64 % 10 == 0 {
+        if (num * 10000.0).floor() as u64 % 10 == 0 {
             round_number = num
         }
     }
@@ -198,7 +199,7 @@ mod tests {
         let mut prev_txns = HashMap::new();
         prev_txns.insert(String::from("1c3ea699a24a17dd99533837e5a9cde84e0517033cf1deba18e9baca53c305d2"), String::from("010000000195d76b18853ab39712192be5f90bf350302eafa0c51067ca59af7bcb183b4025090000006b483045022100ef3c03a1e200a51da0df7117f0a7bcdef3c72b6c269be5123b404e5999b3a00002205e64a0392bd4dc2c7bc32f4a7978ddfbb440e0d9e504a71404fd8e05f88e3db001210256ba3dec93e8fda4485a8dea428d94aa968b509ec4ac430bf0de5f9027f988c8ffffffff0a09f006000000000017a91415adeb31f7415cbabafd07af8d90875d350655bc87989b58000000000017a914f384976b6e07df4c9bd7a212995ac4509e6c7d4787bc9b0c00000000001976a9149fdd37db4058fce4eeff3fca4bc5551590c9187d88ac5e163500000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac806f4a0c000000001976a914e16873335e04467e02d8eb143f1302c685b8f31f88ac88e55a000000000017a9149907fae571a857e66ff83c4d70fa82e1286b06be876c796202000000001976a914981476e141da8d847b814b832e6402cd7338c6d188ac5896ec01000000001976a914c288197330741bc85587f4f00ee48c66e3be319488ac7f8446060000000017a9145d76ef27663a41a4a054d00886367e4a56e24e06874ffe9cc3000000001976a914e5fc50dec180de9a3c1c8f0309506321ae88def988ac00000000"));
         let curr_tx = decode_txn(String::from("0100000001d205c353cabae918badef13c0317054ee8cda9e537385399dd174aa299a63e1c030000006b483045022100af114bd31e351353f25b7260247ae1459f92697e50adef10ac2026182c6eceb2022023defe45fb7dfcdcca2e238b3566184fbf1ffe27e7c2e424df57e602f43e5c49012102c50332f6f13c902b397d1f84ad822ae5209bff1867042f466cd891024fdfaa8dffffffff02c0c62d00000000001976a9141323f3d1e32b79d8fe23d61019aff104884bff2a88ac57ac0600000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac00000000"));
-        println!("{:?}", curr_tx);
+        println!("{:#?}", curr_tx);
         let analysis_result = check_address_reuse(curr_tx, prev_txns);
 
         assert_eq!(analysis_result.heuristic, Heuristics::AddressReuse);
@@ -207,5 +208,14 @@ mod tests {
             analysis_result.details,
             String::from("Input address reuse in outputs")
         )
+    }
+    #[test]
+    fn test_check_round_number() {
+        let tx_hex = String::from("0200000000010123c46091ab735545c6fa00a7db247b35cdc14d97639b9343598ede9d09ce26ea010000001716001442a9f77d14545b2a06ee2650bf39b32b0a0cb6cfffffffff02406603010000000017a914664fd79cf47e3d8525a13e167b68e5cfbb75382587111ff6260000000017a9140abc9d109b9b6bf6facc982783e9e3e12fa86cea870247304402207f1331495a9cf7658d336edb953eb0c138ca52769daebae52b76090066e92a9402202866dfd1edf4ac60c1d6d1cbf7f0e869a64d47cef8954ce7fd92eb6a641b7b08012102131da3e1de41815594d0e40e96c04d8b6b19f4f95af76f95c6cf3fdfa2563dc600000000");
+        let analysis_result = check_round_number(tx_hex);
+       
+        assert_eq!(analysis_result.heuristic, Heuristics::RoundNumber);
+        assert_eq!(analysis_result.result, true);
+        assert_eq!(analysis_result.details, String::from("Found round number in outputs"));
     }
 }
