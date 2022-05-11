@@ -23,12 +23,6 @@ pub struct AnalysisResult {
     details: String,
 }
 
-/// Multi-script heuristic
-/// (a) check if one of the outputs addresses type matches any of the input address type
-/// (b) check if the address type of the outputs are different
-///
-// 1.) create function to collect and decode transaction hex(es) and
-// convert it to a transaction struct
 fn decode_txn(hex_str: String) -> Transaction {
     //let tx_bytes = hexfunc::decode(hex_str).unwrap();
     let tx_bytes = Vec::from_hex(&hex_str).unwrap();
@@ -170,6 +164,23 @@ pub fn check_round_number(tx_hex: String) -> AnalysisResult {
         result,
         details: String::from("Found round number in outputs"),
     };
+}
+
+pub fn check_equaloutput_coinjoin(tx_hex: String) {
+    let tx = decode_txn(tx_hex);
+    // Assumption: we have a coinjoin transaction
+    // check the output for equal payment amounts
+    // return an analysis result
+    const SAT_PER_BTC: f64 = 100_000_000.0;
+
+    let output_values: Vec<f64> = tx.output.iter().map(|out| out.value as f64 / SAT_PER_BTC).collect();
+    // let first_output_value = output_values.get(0).unwrap();
+    for (index, &value) in output_values.iter().enumerate() {
+        for (i, &v) in output_values.iter().enumerate() {
+            if index == i {continue;}
+            
+        }
+    }
 }
 
 #[cfg(test)]
