@@ -20,7 +20,17 @@ pub enum Heuristics {
     CommonInputOwnership,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
+pub enum TransactionType {
+    SimpleSpend,
+    Sweep,
+    ConsolidationSpend,
+    BatchSpend,
+    CoinJoin,
+    UnCategorized
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub struct AnalysisResult {
     heuristic: Heuristics,
     result: bool,
@@ -28,11 +38,8 @@ pub struct AnalysisResult {
 }
 
 fn decode_txn(hex_str: String) -> Transaction {
-    //let tx_bytes = hexfunc::decode(hex_str).unwrap();
     let tx_bytes = Vec::from_hex(&hex_str).unwrap();
     let tx = deserialize(&tx_bytes).unwrap();
-    //let tx = bitcoin::util::psbt::serialize::Deserialize::deserialize(&tx_bytes).unwrap();
-
     println!("transaction details: {:#?}", &tx);
     return tx;
 }
@@ -60,6 +67,35 @@ fn parse_input_tx(txn_in: String, vout_index: usize) -> AddressType {
     let addr_type = *get_address_type(outputs.clone()).get(vout_index).unwrap();
     return addr_type;
 }
+
+fn is_sweep(tx: &Transaction) -> bool {
+    let inputs = &tx.input;
+    let outputs = &tx.output;
+
+    return inputs.len() == 1 && outputs.len() == 1;
+}
+
+fn is_simple_spend(tx: &Transaction) -> bool {
+    let inputs = &tx.input;
+    let outputs = &tx.output;
+
+    return inputs.len() >= 1 && outputs.len() == 2;
+}
+
+fn is_consolidation_spend(tx: &Transaction) -> bool {
+    let inputs = &tx.input;
+    let outputs = &tx.output;
+
+    return inputs.len() > 1 && outputs.len() == 1;
+}
+
+fn is_batch_spend(tx: &Transaction) -> bool {
+    let inputs = &tx.input;
+    let outputs = &tx.output;
+
+    return inputs.len() >= 1 && outputs.len() > 2;
+}
+
 
 pub fn check_multi_script(txn: &Transaction, txn_in: String) -> AnalysisResult {
     let tx_in = txn.input.get(0).unwrap().clone();
@@ -297,16 +333,6 @@ pub fn check_common_input_ownership(txn: &Transaction, prev_txns: &HashMap<Strin
     };
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum TransactionType {
-    SimpleSpend,
-    Sweep,
-    ConsolidationSpend,
-    BatchSpend,
-    CoinJoin,
-    UnCategorized
-}
-
 pub fn categorize_tx(tx: &Transaction, is_coinjoin: bool) -> Vec<TransactionType> {
     let mut categories = Vec::new();
 
@@ -335,34 +361,6 @@ pub fn categorize_tx(tx: &Transaction, is_coinjoin: bool) -> Vec<TransactionType
     }
 
     return categories;
-}
-
-fn is_sweep(tx: &Transaction) -> bool {
-    let inputs = &tx.input;
-    let outputs = &tx.output;
-
-    return inputs.len() == 1 && outputs.len() == 1;
-}
-
-fn is_simple_spend(tx: &Transaction) -> bool {
-    let inputs = &tx.input;
-    let outputs = &tx.output;
-
-    return inputs.len() > 1 && outputs.len() == 2;
-}
-
-fn is_consolidation_spend(tx: &Transaction) -> bool {
-    let inputs = &tx.input;
-    let outputs = &tx.output;
-
-    return inputs.len() > 1 && outputs.len() == 1;
-}
-
-fn is_batch_spend(tx: &Transaction) -> bool {
-    let inputs = &tx.input;
-    let outputs = &tx.output;
-
-    return inputs.len() >= 1 && outputs.len() > 1;
 }
 
 pub fn transaction_analysis(tx_hex: String, is_coinjoin: bool, prev_txns: HashMap<String, String>) -> Vec<AnalysisResult> {
@@ -509,5 +507,59 @@ mod tests {
         assert_eq!(analysis_result.heuristic, Heuristics::CommonInputOwnership);
         assert!(analysis_result.result);
         assert_eq!(analysis_result.details, String::from("Common Input Ownership found"));
+    }
+
+    #[test]
+    fn test_categorize_tx_simple_spend() {
+        let simple_spend_tx_hex = String::from("010000000001014c2686e762e0b260e7e146b5c15978c0b9366d80497b030390d91dc4ecf88f460100000000ffffffff02c4d600000000000017a914b607b1d108813cd10ae75e7b39305656ffea9523874b9b010000000000160014d86fe2f77cb04b0024a3783dc04b705b62c92f4502483045022100ce0ca2e3615c445d5fdedb4a289c7afcee303ef757c1539149a30a23b61f7c6102206a7d5a128224373213e778969d5a9428a52994f9e20ccac9d95e355e2230fd66012102b0747b954d5441f6df0b3daf2ca6bcbab7b6f3f42eda613789edd9d3a2dc40d800000000");
+        let tx = decode_txn(simple_spend_tx_hex);
+
+        let is_coinjoin = false;
+        let transaction_types = categorize_tx(&tx, is_coinjoin);
+        println!("transaction types: {:#?}", transaction_types);
+
+        assert!(transaction_types.contains(&TransactionType::SimpleSpend));
+    }
+
+    #[test]
+    fn test_categorize_tx_sweep() {
+        let sweep_tx_hex = String::from("0100000000010175add4374c3a7fa81941babc87cc7160fa0f9dac3254683d97299d9ec1b81b5a0000000000ffffffff0176ebfa0200000000160014be989da04a33f036044495766cd9de8c2319155002483045022100d60a77d137f283ff1553d929bc3a869d48ebe22c491fa10ff727a9518ca126fb02207a4f8c5fb250538fcb3ec322a3ede082bc3e0271f88ce1acdaac493e7fea86ec012102429eff8ad6d244f88d43692b41386d85d0cd44d548380f61e65ad6d8e4613b8700000000");
+        let tx = decode_txn(sweep_tx_hex);
+
+        let is_coinjoin = false;
+        let transaction_types = categorize_tx(&tx, is_coinjoin);
+        println!("transaction types: {:#?}", transaction_types);
+
+        assert!(transaction_types.contains(&TransactionType::Sweep));
+    }
+
+    #[test]
+    fn test_categorize_tx_coinjoin() {
+        let coinjoin_tx_hex = String::from("01000000000105f1ecbda8223b6cc28bd37f417f43fd8fa462dfede0e6385a18d5ffa430cbb70a0400000000ffffffff0c7b737926e5a21ceec19d20a630b80eb10e7e382efda4544e6ad1730f86b26d0300000000ffffffff679aafd80a2fc306a23d7c1a9bb0cf0d4d4c94d88f79243e8232d7b063e9ed760900000000ffffffffe30fa68d80a9533e843132ca2b8f6de641cbdb110d60e92a3add2ce96ac8af7b0100000000ffffffffae66da81e04dd25798394fb93161b9837e69034390a260df2d2959bc035309870300000000ffffffff0540420f000000000016001407539ac33dfcf782804085a13be4041a944cff1640420f00000000001600142de3d3be2b2cd8b00da7c9e46b645db3c136679d40420f00000000001600144668edd866cf4d9e1cd137c367b7c3f85158d21640420f00000000001600147f6f0faa9ad593e2ab53e3c889c69e19a36eef5d40420f0000000000160014e8abfe7ccf2048fbd7611b4b325557ac55708ece02483045022100c23d6bf44eb2589eca610268dc8f8f243dc8a6870d8ae1718c4f05210943d69a022064fd5ab81fb9dd831e3c4834787a8a8f06a5573f8f43b312ac8080877f8372850121023a21e68d0fa1c4ba8888f02ee40e8a9935d95a744c3d40d7f2d9f99a879be0f202483045022100dd779341477ef8581495bf937893c70890b0ebb3d02af796e57020fd64d1b33c0220268551e07d0fa2187d715a918a0784d9cc5cb0cdcae76125e48486af39b5ec59012103cccd7c5db03f9487f54c79fc379900238e2d55cd168585739a0423b308705c0202483045022100f782923ca6a3be8ddd5d6a3cd0a20df3d852b5edac5f5764c23156f509faa258022054d3b363a6a4582974e71ba6bd514236b5057b9fd4ca2894e0406e62fbeac9f1012102dd008796933c9d52f97a602338224b78ad1b1f82c62d56765869e11379817a9e02483045022100d7a255b4ff94d5f18851561f8ea79db3be6d076cd3e975e610f17e943484cb0e02205ee4e8f4aefe09bf40c34d8a9fe3a66b35148ab322a63ee0b34e168e3723f1c601210367b386171c9ccd683ef16b226f6ca4a8327f6f67027851013e05c6ffcf06531202473044022076cd0cc231afce90ce6ef1b716d273d215d37dc69aa1b6201af02f326f22f6cf02206a1ca8909a0649a7addf63f73c4c405abc7fc8f4b381828d78185bd83ecbdd590121023c899fd40d457014ecd3b1cedb10c48f545b81304e17bc0c9888756e105aa5a700000000");
+        let tx = decode_txn(coinjoin_tx_hex);
+
+        let is_coinjoin = true;
+        let transaction_types = categorize_tx(&tx, is_coinjoin);
+        println!("transaction types: {:#?}", transaction_types);
+
+        assert!(transaction_types.contains(&TransactionType::CoinJoin));
+    }
+
+    #[test]
+    fn test_transactions_analysis() {
+        let mut prev_txns = HashMap::new();
+        prev_txns.insert(String::from("1c3ea699a24a17dd99533837e5a9cde84e0517033cf1deba18e9baca53c305d2"), String::from("010000000195d76b18853ab39712192be5f90bf350302eafa0c51067ca59af7bcb183b4025090000006b483045022100ef3c03a1e200a51da0df7117f0a7bcdef3c72b6c269be5123b404e5999b3a00002205e64a0392bd4dc2c7bc32f4a7978ddfbb440e0d9e504a71404fd8e05f88e3db001210256ba3dec93e8fda4485a8dea428d94aa968b509ec4ac430bf0de5f9027f988c8ffffffff0a09f006000000000017a91415adeb31f7415cbabafd07af8d90875d350655bc87989b58000000000017a914f384976b6e07df4c9bd7a212995ac4509e6c7d4787bc9b0c00000000001976a9149fdd37db4058fce4eeff3fca4bc5551590c9187d88ac5e163500000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac806f4a0c000000001976a914e16873335e04467e02d8eb143f1302c685b8f31f88ac88e55a000000000017a9149907fae571a857e66ff83c4d70fa82e1286b06be876c796202000000001976a914981476e141da8d847b814b832e6402cd7338c6d188ac5896ec01000000001976a914c288197330741bc85587f4f00ee48c66e3be319488ac7f8446060000000017a9145d76ef27663a41a4a054d00886367e4a56e24e06874ffe9cc3000000001976a914e5fc50dec180de9a3c1c8f0309506321ae88def988ac00000000"));
+        let curr_tx_hex = String::from("0100000001d205c353cabae918badef13c0317054ee8cda9e537385399dd174aa299a63e1c030000006b483045022100af114bd31e351353f25b7260247ae1459f92697e50adef10ac2026182c6eceb2022023defe45fb7dfcdcca2e238b3566184fbf1ffe27e7c2e424df57e602f43e5c49012102c50332f6f13c902b397d1f84ad822ae5209bff1867042f466cd891024fdfaa8dffffffff02c0c62d00000000001976a9141323f3d1e32b79d8fe23d61019aff104884bff2a88ac57ac0600000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac00000000");
+        
+        let analysis_result_list = transaction_analysis(curr_tx_hex, false, prev_txns);
+
+        let expected_analysis_result = AnalysisResult {
+            heuristic: Heuristics::UnnecessaryInput,
+            result: false,
+            details: String::from("Found unnecessary inputs in transaction"),
+        };
+        println!("Analysis result list: {:#?}", analysis_result_list);
+
+        assert!(analysis_result_list.contains(&expected_analysis_result));
     }
 }
