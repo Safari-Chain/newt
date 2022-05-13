@@ -1,7 +1,9 @@
 use bitcoin::consensus::deserialize;
 use bitcoin::hashes::hex::FromHex;
+use bitcoin::psbt::PartiallySignedTransaction;
 use bitcoin::util::address::{self, Address};
 use bitcoin::{AddressType, Network, Script, Transaction, TxOut};
+use bitcoin::util::bip32::{ExtendedPubKey, Fingerprint};
 
 extern crate hex as hexfunc;
 
@@ -27,7 +29,7 @@ pub enum TransactionType {
     ConsolidationSpend,
     BatchSpend,
     CoinJoin,
-    UnCategorized
+    UnCategorized,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -35,6 +37,16 @@ pub struct AnalysisResult {
     heuristic: Heuristics,
     result: bool,
     details: String,
+    template: bool,
+}
+
+pub struct Wallet {
+    /// The xpub for account 0 derived from derivation path "m/84h/0h/0h".
+    account_0_xpub: ExtendedPubKey,
+    /// The xpub derived from `INPUT_UTXO_DERIVATION_PATH`.
+    input_xpub: ExtendedPubKey,
+    /// The master extended pubkey fingerprint.
+    master_fingerprint: Fingerprint,
 }
 
 fn decode_txn(hex_str: String) -> Transaction {
@@ -96,7 +108,6 @@ fn is_batch_spend(tx: &Transaction) -> bool {
     return inputs.len() >= 1 && outputs.len() > 2;
 }
 
-
 pub fn check_multi_script(txn: &Transaction, txn_in: String) -> AnalysisResult {
     let tx_in = txn.input.get(0).unwrap().clone();
     let vout_index = tx_in.previous_output.vout;
@@ -133,10 +144,14 @@ pub fn check_multi_script(txn: &Transaction, txn_in: String) -> AnalysisResult {
         heuristic: Heuristics::Multiscript,
         result,
         details: String::from(details),
+        template: false,
     };
 }
 
-pub fn check_address_reuse(txn: &Transaction, prev_txns: &HashMap<String, String>) -> AnalysisResult {
+pub fn check_address_reuse(
+    txn: &Transaction,
+    prev_txns: &HashMap<String, String>,
+) -> AnalysisResult {
     let mut input_addrs = Vec::new();
 
     for input in txn.input.iter() {
@@ -177,6 +192,7 @@ pub fn check_address_reuse(txn: &Transaction, prev_txns: &HashMap<String, String
         heuristic: Heuristics::AddressReuse,
         result,
         details: String::from("Input address reuse in outputs"),
+        template: false,
     };
 }
 
@@ -204,6 +220,7 @@ pub fn check_round_number(tx: &Transaction) -> AnalysisResult {
         heuristic: Heuristics::RoundNumber,
         result,
         details: String::from("Found round number in outputs"),
+        template: false,
     };
 }
 
@@ -236,10 +253,14 @@ pub fn check_equaloutput_coinjoin(tx: &Transaction) -> AnalysisResult {
         heuristic: Heuristics::Coinjoin,
         result,
         details: String::from("Found Equal Outputs Coinjoin"),
+        template: false,
     };
 }
 
-pub fn check_unnecessary_input(tx: &Transaction, prev_txns: &HashMap<String, String>) -> AnalysisResult {
+pub fn check_unnecessary_input(
+    tx: &Transaction,
+    prev_txns: &HashMap<String, String>,
+) -> AnalysisResult {
     // 1. check if total number of output is two
     // 2. get the value of each input and output in the transaction
     // 3. get the different permutations of the inputs
@@ -293,11 +314,14 @@ pub fn check_unnecessary_input(tx: &Transaction, prev_txns: &HashMap<String, Str
         heuristic: Heuristics::UnnecessaryInput,
         result,
         details: String::from("Found unnecessary inputs in transaction"),
+        template: false,
     };
 }
 
-pub fn check_common_input_ownership(txn: &Transaction, prev_txns: &HashMap<String, String>) -> AnalysisResult {
-
+pub fn check_common_input_ownership(
+    txn: &Transaction,
+    prev_txns: &HashMap<String, String>,
+) -> AnalysisResult {
     //for every input in current transaction
     //get address associate to that input using txid and associated tx
     let mut input_addrs = Vec::new();
@@ -325,11 +349,12 @@ pub fn check_common_input_ownership(txn: &Transaction, prev_txns: &HashMap<Strin
             result = true;
         }
     }
-    
+
     return AnalysisResult {
         heuristic: Heuristics::CommonInputOwnership,
         result,
-        details: String::from("Common Input Ownership found")
+        details: String::from("Common Input Ownership found"),
+        template: false,
     };
 }
 
@@ -363,13 +388,16 @@ pub fn categorize_tx(tx: &Transaction, is_coinjoin: bool) -> Vec<TransactionType
     return categories;
 }
 
-pub fn transaction_analysis(tx_hex: String, is_coinjoin: bool, prev_txns: HashMap<String, String>) -> Vec<AnalysisResult> {
+pub fn transaction_analysis(
+    tx_hex: String,
+    is_coinjoin: bool,
+    prev_txns: HashMap<String, String>,
+) -> Vec<AnalysisResult> {
     let tx = decode_txn(tx_hex);
     let categories = categorize_tx(&tx, is_coinjoin);
     let mut analyses_result = Vec::new();
 
     for transaction_type in categories {
-        
         if transaction_type == TransactionType::SimpleSpend {
             analyses_result.push(check_address_reuse(&tx, &prev_txns));
             analyses_result.push(check_common_input_ownership(&tx, &prev_txns));
@@ -414,6 +442,44 @@ pub fn transaction_analysis(tx_hex: String, is_coinjoin: bool, prev_txns: HashMa
     return analyses_result;
 }
 
+pub fn generate_transaction_template(
+    utxo_set: Vec<TxOut>,
+    tx_hex: String,
+    payment_addr: Address,
+    wallet: Wallet,
+    analysis_results: Vec<AnalysisResult>,
+) -> PartiallySignedTransaction {
+    // 1. check if heuristic can be broken
+    // 2. collect inputs based on heuristic and
+    // generate template.
+    // 2(a). collect 5 inputs - UTXO set, PSBT tx hex,
+    // payment output address, analysis result list, wallet.
+    // 2(b). check which analysis result returns true and
+    // from which a template can be generated.
+    //
+    // Address-reuse, multiscript, unnecessary-inputs
+    let mut passed_analysis = Vec::new();
+    let mut transaction_template: PartiallySignedTransaction;
+
+    for analysis_result in analysis_results {
+        if analysis_result.result && analysis_result.template {
+            passed_analysis.push(analysis_result);
+        }
+    }
+
+    for analyzed in passed_analysis {
+        if analysed.heuristic == Heuristics::AddressReuse {
+            break_address_reuse_template(&)
+        }
+        if analysed.heuristic == Heuristics::Multiscript {
+            break_multiscript_template(&)
+        }
+        if analysed.heuristic == Heuristics::Multiscript {
+            break_multiscript_template(&)
+        }
+    }
+    return transaction_template
+}
 
 #[cfg(test)]
 mod tests {
@@ -428,6 +494,7 @@ mod tests {
             heuristic: Heuristics::Multiscript,
             result: true,
             details: String::from("Multi-script"),
+            template: false,
         };
         let analysis_result = check_multi_script(&tx, prev_tx_hex);
 
@@ -489,7 +556,10 @@ mod tests {
 
         assert_eq!(analysis_result.heuristic, Heuristics::UnnecessaryInput);
         assert_eq!(analysis_result.result, false);
-        assert_eq!(analysis_result.details, String::from("Found unnecessary inputs in transaction"));
+        assert_eq!(
+            analysis_result.details,
+            String::from("Found unnecessary inputs in transaction")
+        );
     }
 
     #[test]
@@ -506,7 +576,10 @@ mod tests {
 
         assert_eq!(analysis_result.heuristic, Heuristics::CommonInputOwnership);
         assert!(analysis_result.result);
-        assert_eq!(analysis_result.details, String::from("Common Input Ownership found"));
+        assert_eq!(
+            analysis_result.details,
+            String::from("Common Input Ownership found")
+        );
     }
 
     #[test]
@@ -550,13 +623,14 @@ mod tests {
         let mut prev_txns = HashMap::new();
         prev_txns.insert(String::from("1c3ea699a24a17dd99533837e5a9cde84e0517033cf1deba18e9baca53c305d2"), String::from("010000000195d76b18853ab39712192be5f90bf350302eafa0c51067ca59af7bcb183b4025090000006b483045022100ef3c03a1e200a51da0df7117f0a7bcdef3c72b6c269be5123b404e5999b3a00002205e64a0392bd4dc2c7bc32f4a7978ddfbb440e0d9e504a71404fd8e05f88e3db001210256ba3dec93e8fda4485a8dea428d94aa968b509ec4ac430bf0de5f9027f988c8ffffffff0a09f006000000000017a91415adeb31f7415cbabafd07af8d90875d350655bc87989b58000000000017a914f384976b6e07df4c9bd7a212995ac4509e6c7d4787bc9b0c00000000001976a9149fdd37db4058fce4eeff3fca4bc5551590c9187d88ac5e163500000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac806f4a0c000000001976a914e16873335e04467e02d8eb143f1302c685b8f31f88ac88e55a000000000017a9149907fae571a857e66ff83c4d70fa82e1286b06be876c796202000000001976a914981476e141da8d847b814b832e6402cd7338c6d188ac5896ec01000000001976a914c288197330741bc85587f4f00ee48c66e3be319488ac7f8446060000000017a9145d76ef27663a41a4a054d00886367e4a56e24e06874ffe9cc3000000001976a914e5fc50dec180de9a3c1c8f0309506321ae88def988ac00000000"));
         let curr_tx_hex = String::from("0100000001d205c353cabae918badef13c0317054ee8cda9e537385399dd174aa299a63e1c030000006b483045022100af114bd31e351353f25b7260247ae1459f92697e50adef10ac2026182c6eceb2022023defe45fb7dfcdcca2e238b3566184fbf1ffe27e7c2e424df57e602f43e5c49012102c50332f6f13c902b397d1f84ad822ae5209bff1867042f466cd891024fdfaa8dffffffff02c0c62d00000000001976a9141323f3d1e32b79d8fe23d61019aff104884bff2a88ac57ac0600000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac00000000");
-        
+
         let analysis_result_list = transaction_analysis(curr_tx_hex, false, prev_txns);
 
         let expected_analysis_result = AnalysisResult {
             heuristic: Heuristics::UnnecessaryInput,
             result: false,
             details: String::from("Found unnecessary inputs in transaction"),
+            template: false,
         };
         println!("Analysis result list: {:#?}", analysis_result_list);
 
