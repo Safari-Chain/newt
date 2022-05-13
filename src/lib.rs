@@ -1,18 +1,43 @@
 use bitcoin::consensus::deserialize;
 use bitcoin::hashes::hex::FromHex;
-use bitcoin::psbt::PartiallySignedTransaction;
+use bitcoin::psbt::{PartiallySignedTransaction, self};
 use bitcoin::util::address::{self, Address};
 use bitcoin::{AddressType, Network, Script, Transaction, TxOut};
-use bitcoin::util::bip32::{ExtendedPubKey, Fingerprint};
+use std::fmt;
 
 extern crate hex as hexfunc;
 
 use permute;
 use std::collections::HashMap;
 
+type Psbt = PartiallySignedTransaction;
+type Result<T> = std::result::Result<T, Error>;
+
 const NETWORK: Network = Network::Regtest;
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Error {
+    /// PSBT error.
+    Psbt(psbt::Error),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<psbt::Error> for Error {
+    fn from(e: psbt::Error) -> Error {
+        Error::Psbt(e)
+    }
+}
+
+
+
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum Heuristics {
     Multiscript,
     AddressReuse,
@@ -38,15 +63,8 @@ pub struct AnalysisResult {
     result: bool,
     details: String,
     template: bool,
-}
+    change_addr: Option<Address>
 
-pub struct Wallet {
-    /// The xpub for account 0 derived from derivation path "m/84h/0h/0h".
-    account_0_xpub: ExtendedPubKey,
-    /// The xpub derived from `INPUT_UTXO_DERIVATION_PATH`.
-    input_xpub: ExtendedPubKey,
-    /// The master extended pubkey fingerprint.
-    master_fingerprint: Fingerprint,
 }
 
 fn decode_txn(hex_str: String) -> Transaction {
@@ -145,6 +163,7 @@ pub fn check_multi_script(txn: &Transaction, txn_in: String) -> AnalysisResult {
         result,
         details: String::from(details),
         template: false,
+        change_addr: None
     };
 }
 
@@ -179,11 +198,12 @@ pub fn check_address_reuse(
         .collect();
 
     let mut result: bool = false;
-
+    let mut reuse_addr: Option<Address> = None;
     for input_addr in input_addrs.iter() {
         for out_addr in output_addrs.iter() {
             if *input_addr == *out_addr {
                 result = true;
+                reuse_addr = Some(input_addr.clone());
             }
         }
     }
@@ -193,8 +213,10 @@ pub fn check_address_reuse(
         result,
         details: String::from("Input address reuse in outputs"),
         template: false,
+        change_addr: reuse_addr
     };
 }
+
 
 pub fn check_round_number(tx: &Transaction) -> AnalysisResult {
     //assuming payments have only 2 decimal places and only applies
@@ -221,6 +243,7 @@ pub fn check_round_number(tx: &Transaction) -> AnalysisResult {
         result,
         details: String::from("Found round number in outputs"),
         template: false,
+        change_addr: None
     };
 }
 
@@ -254,6 +277,7 @@ pub fn check_equaloutput_coinjoin(tx: &Transaction) -> AnalysisResult {
         result,
         details: String::from("Found Equal Outputs Coinjoin"),
         template: false,
+        change_addr: None
     };
 }
 
@@ -315,6 +339,7 @@ pub fn check_unnecessary_input(
         result,
         details: String::from("Found unnecessary inputs in transaction"),
         template: false,
+        change_addr: None
     };
 }
 
@@ -355,6 +380,7 @@ pub fn check_common_input_ownership(
         result,
         details: String::from("Common Input Ownership found"),
         template: false,
+        change_addr: None
     };
 }
 
@@ -443,12 +469,11 @@ pub fn transaction_analysis(
 }
 
 pub fn generate_transaction_template(
-    utxo_set: Vec<TxOut>,
+    utxo_set: Option<Vec<TxOut>>,
     tx_hex: String,
-    payment_addr: Address,
-    wallet: Wallet,
+    change_addr: Option<Address>,
     analysis_results: Vec<AnalysisResult>,
-) -> PartiallySignedTransaction {
+) {
     // 1. check if heuristic can be broken
     // 2. collect inputs based on heuristic and
     // generate template.
@@ -458,8 +483,9 @@ pub fn generate_transaction_template(
     // from which a template can be generated.
     //
     // Address-reuse, multiscript, unnecessary-inputs
+    let mut tx = decode_txn(tx_hex);
     let mut passed_analysis = Vec::new();
-    let mut transaction_template: PartiallySignedTransaction;
+    //let mut transaction_template: PartiallySignedTransaction;
 
     for analysis_result in analysis_results {
         if analysis_result.result && analysis_result.template {
@@ -468,17 +494,50 @@ pub fn generate_transaction_template(
     }
 
     for analyzed in passed_analysis {
-        if analysed.heuristic == Heuristics::AddressReuse {
-            break_address_reuse_template(&)
+        if analyzed.heuristic == Heuristics::AddressReuse {
+            match change_addr.clone() {
+                Some(addr) => {
+                    break_address_reuse_template(&mut tx, addr, &analyzed);
+                },
+                None => {
+                    panic!("Expected Change Address");
+                }
+            }
+            
         }
-        if analysed.heuristic == Heuristics::Multiscript {
-            break_multiscript_template(&)
+        if analyzed.heuristic == Heuristics::Multiscript {
+            //break_multiscript_template(&)
+            todo!();
         }
-        if analysed.heuristic == Heuristics::Multiscript {
-            break_multiscript_template(&)
+
+        if analyzed.heuristic == Heuristics::Multiscript {
+            //break_multiscript_template(&)
+            todo!();
         }
     }
-    return transaction_template
+    //return transaction_template
+}
+
+fn break_address_reuse_template(tx: &mut Transaction, new_addr: Address, analysis_result: &AnalysisResult) -> Result<Psbt> {
+    //figure out the address that is being reused
+    //change reused address with new address 
+    //build PSBT from Transaction
+    let outputs = tx.output.clone();
+    let mut new_outputs = Vec::new();
+
+    for output in outputs.clone().iter_mut() {
+        if analysis_result.change_addr.clone().unwrap() == script_to_addr(output.script_pubkey.clone()) {
+            output.script_pubkey = new_addr.script_pubkey();
+        }
+        new_outputs.push(output.clone());
+        
+    }
+
+    tx.output = new_outputs;
+    let psbt = Psbt::from_unsigned_tx(tx.clone())?;
+    return Ok(psbt);
+
+
 }
 
 #[cfg(test)]
@@ -495,12 +554,14 @@ mod tests {
             result: true,
             details: String::from("Multi-script"),
             template: false,
+            change_addr: None
         };
         let analysis_result = check_multi_script(&tx, prev_tx_hex);
 
         assert_eq!(expected_result.heuristic, analysis_result.heuristic);
         assert_eq!(expected_result.result, analysis_result.result);
         assert_eq!(expected_result.details, analysis_result.details);
+        assert_eq!(expected_result.change_addr, None);
     }
 
     #[test]
@@ -631,6 +692,7 @@ mod tests {
             result: false,
             details: String::from("Found unnecessary inputs in transaction"),
             template: false,
+            change_addr: None
         };
         println!("Analysis result list: {:#?}", analysis_result_list);
 
