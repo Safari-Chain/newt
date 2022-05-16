@@ -2,7 +2,7 @@ use bitcoin::consensus::deserialize;
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::psbt::{PartiallySignedTransaction, self};
 use bitcoin::util::address::{self, Address};
-use bitcoin::{AddressType, Network, Script, Transaction, TxOut};
+use bitcoin::{ AddressType, Network, Script, Transaction, TxOut};
 use std::fmt;
 
 extern crate hex as hexfunc;
@@ -13,7 +13,7 @@ use std::collections::HashMap;
 type Psbt = PartiallySignedTransaction;
 type Result<T> = std::result::Result<T, Error>;
 
-const NETWORK: Network = Network::Regtest;
+const NETWORK: Network = Network::Bitcoin;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Error {
@@ -70,7 +70,7 @@ pub struct AnalysisResult {
 fn decode_txn(hex_str: String) -> Transaction {
     let tx_bytes = Vec::from_hex(&hex_str).unwrap();
     let tx = deserialize(&tx_bytes).unwrap();
-    println!("transaction details: {:#?}", &tx);
+    //println!("transaction details: {:#?}", &tx);
     return tx;
 }
 
@@ -197,6 +197,9 @@ pub fn check_address_reuse(
         })
         .collect();
 
+    
+    println!("{:#?}", output_addrs);
+    println!("{:#?}", input_addrs);
     let mut result: bool = false;
     let mut reuse_addr: Option<Address> = None;
     for input_addr in input_addrs.iter() {
@@ -212,7 +215,7 @@ pub fn check_address_reuse(
         heuristic: Heuristics::AddressReuse,
         result,
         details: String::from("Input address reuse in outputs"),
-        template: false,
+        template: true,
         change_addr: reuse_addr
     };
 }
@@ -525,6 +528,13 @@ fn break_address_reuse_template(tx: &mut Transaction, new_addr: Address, analysi
     let outputs = tx.output.clone();
     let mut new_outputs = Vec::new();
 
+    //clear scriptsig in inputs
+    //We are only doing this because we are using a test
+    //transaction that has scriptsigs.
+    for input in tx.input.iter_mut() {
+        input.script_sig = Script::new();
+    }
+
     for output in outputs.clone().iter_mut() {
         if analysis_result.change_addr.clone().unwrap() == script_to_addr(output.script_pubkey.clone()) {
             output.script_pubkey = new_addr.script_pubkey();
@@ -533,15 +543,20 @@ fn break_address_reuse_template(tx: &mut Transaction, new_addr: Address, analysi
         
     }
 
+
     tx.output = new_outputs;
     let psbt = Psbt::from_unsigned_tx(tx.clone())?;
-    return Ok(psbt);
 
+    return Ok(psbt);
 
 }
 
 #[cfg(test)]
 mod tests {
+
+    use std::str::FromStr;
+
+    use bitcoin::consensus::encode;
 
     use super::*;
     #[test]
@@ -697,5 +712,28 @@ mod tests {
         println!("Analysis result list: {:#?}", analysis_result_list);
 
         assert!(analysis_result_list.contains(&expected_analysis_result));
+    }
+
+
+    #[test]
+    fn test_break_address_reuse_template() {
+        let curr_tx_hex = String::from("0100000001d205c353cabae918badef13c0317054ee8cda9e537385399dd174aa299a63e1c030000006b483045022100af114bd31e351353f25b7260247ae1459f92697e50adef10ac2026182c6eceb2022023defe45fb7dfcdcca2e238b3566184fbf1ffe27e7c2e424df57e602f43e5c49012102c50332f6f13c902b397d1f84ad822ae5209bff1867042f466cd891024fdfaa8dffffffff02c0c62d00000000001976a9141323f3d1e32b79d8fe23d61019aff104884bff2a88ac57ac0600000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac00000000");
+        let mut curr_tx = decode_txn(curr_tx_hex.clone());
+        let mut prev_txns = HashMap::new();
+        prev_txns.insert(String::from("1c3ea699a24a17dd99533837e5a9cde84e0517033cf1deba18e9baca53c305d2"), String::from("010000000195d76b18853ab39712192be5f90bf350302eafa0c51067ca59af7bcb183b4025090000006b483045022100ef3c03a1e200a51da0df7117f0a7bcdef3c72b6c269be5123b404e5999b3a00002205e64a0392bd4dc2c7bc32f4a7978ddfbb440e0d9e504a71404fd8e05f88e3db001210256ba3dec93e8fda4485a8dea428d94aa968b509ec4ac430bf0de5f9027f988c8ffffffff0a09f006000000000017a91415adeb31f7415cbabafd07af8d90875d350655bc87989b58000000000017a914f384976b6e07df4c9bd7a212995ac4509e6c7d4787bc9b0c00000000001976a9149fdd37db4058fce4eeff3fca4bc5551590c9187d88ac5e163500000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac806f4a0c000000001976a914e16873335e04467e02d8eb143f1302c685b8f31f88ac88e55a000000000017a9149907fae571a857e66ff83c4d70fa82e1286b06be876c796202000000001976a914981476e141da8d847b814b832e6402cd7338c6d188ac5896ec01000000001976a914c288197330741bc85587f4f00ee48c66e3be319488ac7f8446060000000017a9145d76ef27663a41a4a054d00886367e4a56e24e06874ffe9cc3000000001976a914e5fc50dec180de9a3c1c8f0309506321ae88def988ac00000000"));
+        let analysis_result_list = transaction_analysis(curr_tx_hex, false, prev_txns.clone());
+        let new_addr = Address::from_str("bc1q8jnnr6d8wvtzymrngrzhu3p5hrff2cx9a6fshj").unwrap();
+        let psbt_tx = break_address_reuse_template(&mut curr_tx, new_addr.clone(), analysis_result_list.get(0).unwrap()).unwrap();
+        let tx = psbt_tx.extract_tx();
+        let mut has_new_addr = false;
+        for output in tx.output.iter() {
+
+            let addr = script_to_addr(output.script_pubkey.clone());
+            if addr == new_addr {
+                has_new_addr = true;
+            }
+        }
+        
+        assert!(has_new_addr);
     }
 }
