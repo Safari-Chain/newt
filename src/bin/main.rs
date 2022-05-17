@@ -4,7 +4,7 @@ use std::str::FromStr;
 extern crate hex as hexfunc;
 
 use bitcoin::blockdata::{opcodes, script};
-use bitcoin::consensus::{encode};
+use bitcoin::consensus::encode;
 use bitcoin::hashes::hex::{self, FromHex};
 use bitcoin::hashes::Hash;
 use bitcoin::secp256k1::{Message, Secp256k1, Signing, Verification};
@@ -19,8 +19,8 @@ use bitcoin::util::psbt::{
 };
 use bitcoin::util::sighash::SighashCache;
 use bitcoin::{
-    Address, Amount, EcdsaSig, EcdsaSighashType, Network, OutPoint, PrivateKey, PublicKey, Script,
-    Sighash, Transaction, TxIn, TxOut, Txid, Witness, AddressType,
+    Address, AddressType, Amount, EcdsaSig, EcdsaSighashType, Network, OutPoint, PrivateKey,
+    PublicKey, Script, Sighash, Transaction, TxIn, TxOut, Txid, Witness,
 };
 
 type Result<T> = std::result::Result<T, Error>;
@@ -75,7 +75,6 @@ fn main() -> Result<()> {
 
     Ok(())
 }
-
 
 // We cache the pubkeys for convenience because it requires a scep context to convert the private key.
 /// An example of an offline signer i.e., a cold-storage device.

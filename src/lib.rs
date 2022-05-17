@@ -1,16 +1,41 @@
 use bitcoin::consensus::deserialize;
 use bitcoin::hashes::hex::FromHex;
+use bitcoin::psbt::{self, PartiallySignedTransaction};
 use bitcoin::util::address::{self, Address};
-use bitcoin::{AddressType, Network, Script, Transaction, TxOut};
+use bitcoin::{AddressType, Network, Script, Transaction, TxOut, Txid, Witness, TxIn, OutPoint };
+use std::{fmt, hash};
 
 extern crate hex as hexfunc;
 
 use permute;
 use std::collections::HashMap;
 
-const NETWORK: Network = Network::Regtest;
+type Psbt = PartiallySignedTransaction;
+type Result<T> = std::result::Result<T, Error>;
 
-#[derive(Debug, Eq, PartialEq)]
+const NETWORK: Network = Network::Bitcoin;
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum Error {
+    /// PSBT error.
+    Psbt(psbt::Error),
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self)
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<psbt::Error> for Error {
+    fn from(e: psbt::Error) -> Error {
+        Error::Psbt(e)
+    }
+}
+
+#[derive(Debug, Eq, PartialEq, Clone)]
 pub enum Heuristics {
     Multiscript,
     AddressReuse,
@@ -27,7 +52,7 @@ pub enum TransactionType {
     ConsolidationSpend,
     BatchSpend,
     CoinJoin,
-    UnCategorized
+    UnCategorized,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -35,12 +60,14 @@ pub struct AnalysisResult {
     heuristic: Heuristics,
     result: bool,
     details: String,
+    template: bool,
+    change_addr: Option<Address>,
 }
 
 fn decode_txn(hex_str: String) -> Transaction {
     let tx_bytes = Vec::from_hex(&hex_str).unwrap();
     let tx = deserialize(&tx_bytes).unwrap();
-    println!("transaction details: {:#?}", &tx);
+    //println!("transaction details: {:#?}", &tx);
     return tx;
 }
 
@@ -96,7 +123,6 @@ fn is_batch_spend(tx: &Transaction) -> bool {
     return inputs.len() >= 1 && outputs.len() > 2;
 }
 
-
 pub fn check_multi_script(txn: &Transaction, txn_in: String) -> AnalysisResult {
     let tx_in = txn.input.get(0).unwrap().clone();
     let vout_index = tx_in.previous_output.vout;
@@ -133,10 +159,15 @@ pub fn check_multi_script(txn: &Transaction, txn_in: String) -> AnalysisResult {
         heuristic: Heuristics::Multiscript,
         result,
         details: String::from(details),
+        template: false,
+        change_addr: None,
     };
 }
 
-pub fn check_address_reuse(txn: &Transaction, prev_txns: &HashMap<String, String>) -> AnalysisResult {
+pub fn check_address_reuse(
+    txn: &Transaction,
+    prev_txns: &HashMap<String, String>,
+) -> AnalysisResult {
     let mut input_addrs = Vec::new();
 
     for input in txn.input.iter() {
@@ -163,12 +194,15 @@ pub fn check_address_reuse(txn: &Transaction, prev_txns: &HashMap<String, String
         })
         .collect();
 
+    println!("{:#?}", output_addrs);
+    println!("{:#?}", input_addrs);
     let mut result: bool = false;
-
+    let mut reuse_addr: Option<Address> = None;
     for input_addr in input_addrs.iter() {
         for out_addr in output_addrs.iter() {
             if *input_addr == *out_addr {
                 result = true;
+                reuse_addr = Some(input_addr.clone());
             }
         }
     }
@@ -177,6 +211,8 @@ pub fn check_address_reuse(txn: &Transaction, prev_txns: &HashMap<String, String
         heuristic: Heuristics::AddressReuse,
         result,
         details: String::from("Input address reuse in outputs"),
+        template: true,
+        change_addr: reuse_addr,
     };
 }
 
@@ -204,6 +240,8 @@ pub fn check_round_number(tx: &Transaction) -> AnalysisResult {
         heuristic: Heuristics::RoundNumber,
         result,
         details: String::from("Found round number in outputs"),
+        template: false,
+        change_addr: None,
     };
 }
 
@@ -236,40 +274,35 @@ pub fn check_equaloutput_coinjoin(tx: &Transaction) -> AnalysisResult {
         heuristic: Heuristics::Coinjoin,
         result,
         details: String::from("Found Equal Outputs Coinjoin"),
+        template: false,
+        change_addr: None,
     };
 }
 
-pub fn check_unnecessary_input(tx: &Transaction, prev_txns: &HashMap<String, String>) -> AnalysisResult {
-    // 1. check if total number of output is two
-    // 2. get the value of each input and output in the transaction
-    // 3. get the different permutations of the inputs
-    // 4. For each output, check for unnecessary inputs using the permutation
+fn compute_unnecessary_inputs(tx: &Transaction, prev_txns: &Vec<TxOut>) -> Vec<bool> {
+    
     const SAT_PER_BTC: f64 = 100_000_000.0;
-
     let outputs = tx.output.clone();
-    // let inputs = tx.input;
-    let mut result = false;
+    let mut input_values = Vec::new();
+
+    //Get input from prev txs outputs
+    for v in prev_txns {
+        input_values.push(v.value as f64/ SAT_PER_BTC);
+    }
+
+    let mut assert_unnecessary_inputs: Vec<bool> = vec![false; outputs.len()];
 
     if outputs.len() == 2 {
-        let mut input_values = Vec::new();
+        
         let output_values: Vec<f64> = outputs
             .iter()
             .map(|out| out.value as f64 / SAT_PER_BTC)
             .collect();
 
-        for input in tx.input.clone() {
-            let input_index = input.previous_output.vout;
-            let tx_id = input.previous_output.txid.to_string();
-            let tx_hex = prev_txns.get(&tx_id).unwrap();
-            let decoded_tx = decode_txn(tx_hex.to_owned());
-            let vout_output = decoded_tx.output[input_index as usize].clone();
-            let vout_output_value = vout_output.value as f64 / SAT_PER_BTC;
-            input_values.push(vout_output_value);
-        }
+       
 
         let permutated_inputs = permute::permute(input_values.clone());
         println!("permuted inputs: {:#?}", permutated_inputs);
-        let mut assert_unnecessary_inputs: Vec<bool> = vec![false; output_values.len()];
 
         for (output_index, &output) in output_values.iter().enumerate() {
             for values in permutated_inputs.iter() {
@@ -285,19 +318,47 @@ pub fn check_unnecessary_input(tx: &Transaction, prev_txns: &HashMap<String, Str
                 }
             }
         }
-
-        result = assert_unnecessary_inputs.iter().all(|&x| x);
     }
+    return assert_unnecessary_inputs;
+}
+
+pub fn check_unnecessary_input(
+    tx: &Transaction,
+    prev_txns: &HashMap<String, String>,
+) -> AnalysisResult {
+    // 1. check if total number of output is two
+    // 2. get the value of each input and output in the transaction
+    // 3. get the different permutations of the inputs
+    // 4. For each output, check for unnecessary inputs using the permutation
+    //compute <txid, txout>
+    let mut outputs = Vec::new();
+
+
+    for input in tx.input.clone() {
+        let input_index = input.previous_output.vout;
+        let tx_id = input.previous_output.txid.to_string();
+        let tx_hex = prev_txns.get(&tx_id).unwrap();
+        let decoded_tx = decode_txn(tx_hex.to_owned());
+        let vout_output = decoded_tx.output[input_index as usize].clone();
+        outputs.push(vout_output);
+    }
+
+
+    let result = compute_unnecessary_inputs(tx, &outputs).iter().all(|&x| x);
 
     return AnalysisResult {
         heuristic: Heuristics::UnnecessaryInput,
         result,
         details: String::from("Found unnecessary inputs in transaction"),
+        template: false,
+        change_addr: None,
     };
 }
 
-pub fn check_common_input_ownership(txn: &Transaction, prev_txns: &HashMap<String, String>) -> AnalysisResult {
-
+pub fn check_common_input_ownership(
+    txn: &Transaction,
+    prev_txns: &HashMap<String, String>,
+) -> AnalysisResult {
     //for every input in current transaction
     //get address associate to that input using txid and associated tx
     let mut input_addrs = Vec::new();
@@ -325,11 +386,13 @@ pub fn check_common_input_ownership(txn: &Transaction, prev_txns: &HashMap<Strin
             result = true;
         }
     }
-    
+
     return AnalysisResult {
         heuristic: Heuristics::CommonInputOwnership,
         result,
-        details: String::from("Common Input Ownership found")
+        details: String::from("Common Input Ownership found"),
+        template: false,
+        change_addr: None,
     };
 }
 
@@ -363,13 +426,16 @@ pub fn categorize_tx(tx: &Transaction, is_coinjoin: bool) -> Vec<TransactionType
     return categories;
 }
 
-pub fn transaction_analysis(tx_hex: String, is_coinjoin: bool, prev_txns: HashMap<String, String>) -> Vec<AnalysisResult> {
+pub fn transaction_analysis(
+    tx_hex: String,
+    is_coinjoin: bool,
+    prev_txns: HashMap<String, String>,
+) -> Vec<AnalysisResult> {
     let tx = decode_txn(tx_hex);
     let categories = categorize_tx(&tx, is_coinjoin);
     let mut analyses_result = Vec::new();
 
     for transaction_type in categories {
-        
         if transaction_type == TransactionType::SimpleSpend {
             analyses_result.push(check_address_reuse(&tx, &prev_txns));
             analyses_result.push(check_common_input_ownership(&tx, &prev_txns));
@@ -414,9 +480,209 @@ pub fn transaction_analysis(tx_hex: String, is_coinjoin: bool, prev_txns: HashMa
     return analyses_result;
 }
 
+pub fn generate_transaction_template(
+    utxo_set: Option<HashMap<(Txid, u32), TxOut>>,
+    tx_hex: String,
+    change_addr: Option<Address>,
+    analysis_results: Vec<AnalysisResult>,
+) -> Option<PartiallySignedTransaction> {
+    // 1. check if heuristic can be broken
+    // 2. collect inputs based on heuristic and
+    // generate template.
+    // 2(a). collect 5 inputs - UTXO set, PSBT tx hex,
+    // payment output address, analysis result list, wallet.
+    // 2(b). check which analysis result returns true and
+    // from which a template can be generated.
+    //
+    // Address-reuse, multiscript, unnecessary-inputs
+    let mut tx = decode_txn(tx_hex);
+    let utxos = utxo_set.unwrap();
+    let mut passed_analysis = Vec::new();
+    let mut transaction_template: Option<PartiallySignedTransaction> = None;
+
+    for analysis_result in analysis_results {
+        if analysis_result.result && analysis_result.template {
+            passed_analysis.push(analysis_result);
+        }
+    }
+
+    for analyzed in passed_analysis {
+        if analyzed.heuristic == Heuristics::AddressReuse {
+            match change_addr.clone() {
+                Some(addr) => {
+                    let result = break_address_reuse_template(&mut tx, addr, &analyzed).unwrap();
+                    transaction_template = Some(result);
+                }
+                None => {
+                    panic!("Expected Change Address");
+                }
+            }
+        }
+        if analyzed.heuristic == Heuristics::Multiscript {
+            //break_multiscript_template(&)
+            if analyzed.heuristic == Heuristics::Multiscript {
+                let result = break_multiscript_template(&mut tx, change_addr).unwrap();
+                transaction_template = Some(result);
+                return transaction_template;
+            }
+            todo!();
+        }
+
+        if analyzed.heuristic == Heuristics::UnnecessaryInput {
+            //break_unnecessary_input_template(&)
+            break_unnecessary_input_template(&utxos, &mut tx);
+        }
+    }
+
+    return transaction_template;
+}
+
+fn break_unnecessary_input_template(utxos: &HashMap<(Txid, u32), TxOut>, tx: &mut Transaction) -> Result<Psbt> {
+    // 1. grab the utxo set
+    // 2. keep adding inputs till you have unnecessary inputs
+    // for each of the outputs
+    // 3. the inputs are selected at random
+    // compute_unnecessary_inputs(tx, prev_txns)
+    //build outputs and pass to the compute function.
+    let mut outputs = Vec::new();
+    for (_k, v) in utxos {
+        outputs.push(v.to_owned());
+    }
+    let mut utxo_iter = utxos.keys();
+
+    loop {
+
+        let result = compute_unnecessary_inputs(tx, &outputs).iter().all(|&x| x);
+
+        //if result is false, add input to transaction from utxos set.
+        //else break out of the loop and create psbt.
+        if result {
+            break;
+        } else {
+            //pick random utxo and add as input to tx
+            let next_utxo = utxo_iter.next();
+
+            match next_utxo {
+                Some(key) => {
+                    //let &val = utxos.get(key).unwrap();
+                    //create input and add to transaction
+                    let tx_in = TxIn {
+                        previous_output: OutPoint {
+                            txid: key.0,
+                            vout: key.1,
+                        },
+                        script_sig: Script::new(),
+                        sequence: 0xFFFFFFFF, // Ignore nSequence.
+                        witness: Witness::default(),
+                    };
+                    tx.input.push(tx_in);
+                },
+                None => { 
+                    // return with an impossible message to user
+                    let error = psbt::Error::NoMorePairs;
+                    return Err(Error::Psbt(error));
+                }
+            }
+        }
+
+
+    }
+
+    let psbt = Psbt::from_unsigned_tx(tx.clone())?;
+
+    return Ok(psbt);
+}
+
+fn break_multiscript_template(tx: &mut Transaction, change_addr: Option<Address>) -> Result<Psbt> {
+    let change_addr_type = address::Address::address_type(&change_addr.clone().unwrap()).unwrap();
+    let mut new_outputs = Vec::new();
+    let mut change_output_value: Option<u64> = None;
+    let mut payment_output: Option<TxOut> = None;
+
+    //clear scriptsig in inputs
+    //We are only doing this because we are using a test
+    //transaction that has scriptsigs.
+    for input in tx.input.iter_mut() {
+        input.script_sig = Script::new();
+        input.witness = Witness::default();
+    }
+
+    if change_addr.clone().unwrap() == script_to_addr(tx.output[0].script_pubkey.clone()) {
+        change_output_value = Some(tx.output[0].value);
+        payment_output = Some(tx.output[1].clone());
+    } else {
+        change_output_value = Some(tx.output[1].value);
+        payment_output = Some(tx.output[0].clone());
+    }
+
+    for output in tx.output.iter_mut() {
+        let output_addr_type =
+            Address::address_type(&script_to_addr(output.script_pubkey.clone())).unwrap();
+        if change_addr_type != output_addr_type {
+            if output_addr_type.to_string() == "p2sh" {
+                let script = Script::new().to_p2sh();
+                let new_change_output = TxOut {
+                    value: change_output_value.unwrap(),
+                    script_pubkey: script,
+                };
+                new_outputs.push(new_change_output.clone());
+                new_outputs.push(payment_output.clone().unwrap());
+            }
+            if output_addr_type.to_string() == "p2wsh" {
+                let script = Script::new().to_v0_p2wsh();
+                let new_change_output = TxOut {
+                    value: change_output_value.unwrap(),
+                    script_pubkey: script,
+                };
+                new_outputs.push(new_change_output.clone());
+                new_outputs.push(payment_output.clone().unwrap());
+            }
+        }
+    }
+
+    tx.output = new_outputs;
+    let psbt = Psbt::from_unsigned_tx(tx.clone())?;
+
+    return Ok(psbt);
+}
+
+fn break_address_reuse_template(
+    tx: &mut Transaction,
+    new_addr: Address,
+    analysis_result: &AnalysisResult,
+) -> Result<Psbt> {
+    //figure out the address that is being reused
+    //change reused address with new address
+    //build PSBT from Transaction
+    let outputs = tx.output.clone();
+    let mut new_outputs = Vec::new();
+
+    //clear scriptsig in inputs
+    //We are only doing this because we are using a test
+    //transaction that has scriptsigs.
+    for input in tx.input.iter_mut() {
+        input.script_sig = Script::new();
+    }
+
+    for output in outputs.clone().iter_mut() {
+        if analysis_result.change_addr.clone().unwrap()
+            == script_to_addr(output.script_pubkey.clone())
+        {
+            output.script_pubkey = new_addr.script_pubkey();
+        }
+        new_outputs.push(output.clone());
+    }
+
+    tx.output = new_outputs;
+    let psbt = Psbt::from_unsigned_tx(tx.clone())?;
+
+    return Ok(psbt);
+}
 
 #[cfg(test)]
 mod tests {
+
+    use std::str::FromStr;
 
     use super::*;
     #[test]
@@ -428,12 +694,15 @@ mod tests {
             heuristic: Heuristics::Multiscript,
             result: true,
             details: String::from("Multi-script"),
+            template: false,
+            change_addr: None,
         };
         let analysis_result = check_multi_script(&tx, prev_tx_hex);
 
         assert_eq!(expected_result.heuristic, analysis_result.heuristic);
         assert_eq!(expected_result.result, analysis_result.result);
         assert_eq!(expected_result.details, analysis_result.details);
+        assert_eq!(expected_result.change_addr, None);
     }
 
     #[test]
@@ -489,7 +758,10 @@ mod tests {
 
         assert_eq!(analysis_result.heuristic, Heuristics::UnnecessaryInput);
         assert_eq!(analysis_result.result, false);
-        assert_eq!(analysis_result.details, String::from("Found unnecessary inputs in transaction"));
+        assert_eq!(
+            analysis_result.details,
+            String::from("Found unnecessary inputs in transaction")
+        );
     }
 
     #[test]
@@ -506,7 +778,10 @@ mod tests {
 
         assert_eq!(analysis_result.heuristic, Heuristics::CommonInputOwnership);
         assert!(analysis_result.result);
-        assert_eq!(analysis_result.details, String::from("Common Input Ownership found"));
+        assert_eq!(
+            analysis_result.details,
+            String::from("Common Input Ownership found")
+        );
     }
 
     #[test]
@@ -550,16 +825,73 @@ mod tests {
         let mut prev_txns = HashMap::new();
         prev_txns.insert(String::from("1c3ea699a24a17dd99533837e5a9cde84e0517033cf1deba18e9baca53c305d2"), String::from("010000000195d76b18853ab39712192be5f90bf350302eafa0c51067ca59af7bcb183b4025090000006b483045022100ef3c03a1e200a51da0df7117f0a7bcdef3c72b6c269be5123b404e5999b3a00002205e64a0392bd4dc2c7bc32f4a7978ddfbb440e0d9e504a71404fd8e05f88e3db001210256ba3dec93e8fda4485a8dea428d94aa968b509ec4ac430bf0de5f9027f988c8ffffffff0a09f006000000000017a91415adeb31f7415cbabafd07af8d90875d350655bc87989b58000000000017a914f384976b6e07df4c9bd7a212995ac4509e6c7d4787bc9b0c00000000001976a9149fdd37db4058fce4eeff3fca4bc5551590c9187d88ac5e163500000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac806f4a0c000000001976a914e16873335e04467e02d8eb143f1302c685b8f31f88ac88e55a000000000017a9149907fae571a857e66ff83c4d70fa82e1286b06be876c796202000000001976a914981476e141da8d847b814b832e6402cd7338c6d188ac5896ec01000000001976a914c288197330741bc85587f4f00ee48c66e3be319488ac7f8446060000000017a9145d76ef27663a41a4a054d00886367e4a56e24e06874ffe9cc3000000001976a914e5fc50dec180de9a3c1c8f0309506321ae88def988ac00000000"));
         let curr_tx_hex = String::from("0100000001d205c353cabae918badef13c0317054ee8cda9e537385399dd174aa299a63e1c030000006b483045022100af114bd31e351353f25b7260247ae1459f92697e50adef10ac2026182c6eceb2022023defe45fb7dfcdcca2e238b3566184fbf1ffe27e7c2e424df57e602f43e5c49012102c50332f6f13c902b397d1f84ad822ae5209bff1867042f466cd891024fdfaa8dffffffff02c0c62d00000000001976a9141323f3d1e32b79d8fe23d61019aff104884bff2a88ac57ac0600000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac00000000");
-        
+
         let analysis_result_list = transaction_analysis(curr_tx_hex, false, prev_txns);
 
         let expected_analysis_result = AnalysisResult {
             heuristic: Heuristics::UnnecessaryInput,
             result: false,
             details: String::from("Found unnecessary inputs in transaction"),
+            template: false,
+            change_addr: None,
         };
         println!("Analysis result list: {:#?}", analysis_result_list);
 
         assert!(analysis_result_list.contains(&expected_analysis_result));
+    }
+
+    #[test]
+    fn test_break_address_reuse_template() {
+        let curr_tx_hex = String::from("0100000001d205c353cabae918badef13c0317054ee8cda9e537385399dd174aa299a63e1c030000006b483045022100af114bd31e351353f25b7260247ae1459f92697e50adef10ac2026182c6eceb2022023defe45fb7dfcdcca2e238b3566184fbf1ffe27e7c2e424df57e602f43e5c49012102c50332f6f13c902b397d1f84ad822ae5209bff1867042f466cd891024fdfaa8dffffffff02c0c62d00000000001976a9141323f3d1e32b79d8fe23d61019aff104884bff2a88ac57ac0600000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac00000000");
+        let mut curr_tx = decode_txn(curr_tx_hex.clone());
+        let mut prev_txns = HashMap::new();
+        prev_txns.insert(String::from("1c3ea699a24a17dd99533837e5a9cde84e0517033cf1deba18e9baca53c305d2"), String::from("010000000195d76b18853ab39712192be5f90bf350302eafa0c51067ca59af7bcb183b4025090000006b483045022100ef3c03a1e200a51da0df7117f0a7bcdef3c72b6c269be5123b404e5999b3a00002205e64a0392bd4dc2c7bc32f4a7978ddfbb440e0d9e504a71404fd8e05f88e3db001210256ba3dec93e8fda4485a8dea428d94aa968b509ec4ac430bf0de5f9027f988c8ffffffff0a09f006000000000017a91415adeb31f7415cbabafd07af8d90875d350655bc87989b58000000000017a914f384976b6e07df4c9bd7a212995ac4509e6c7d4787bc9b0c00000000001976a9149fdd37db4058fce4eeff3fca4bc5551590c9187d88ac5e163500000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac806f4a0c000000001976a914e16873335e04467e02d8eb143f1302c685b8f31f88ac88e55a000000000017a9149907fae571a857e66ff83c4d70fa82e1286b06be876c796202000000001976a914981476e141da8d847b814b832e6402cd7338c6d188ac5896ec01000000001976a914c288197330741bc85587f4f00ee48c66e3be319488ac7f8446060000000017a9145d76ef27663a41a4a054d00886367e4a56e24e06874ffe9cc3000000001976a914e5fc50dec180de9a3c1c8f0309506321ae88def988ac00000000"));
+        let analysis_result_list = transaction_analysis(curr_tx_hex, false, prev_txns.clone());
+        let new_addr = Address::from_str("bc1q8jnnr6d8wvtzymrngrzhu3p5hrff2cx9a6fshj").unwrap();
+        let psbt_tx = break_address_reuse_template(
+            &mut curr_tx,
+            new_addr.clone(),
+            analysis_result_list.get(0).unwrap(),
+        )
+        .unwrap();
+        let tx = psbt_tx.extract_tx();
+        let mut has_new_addr = false;
+        for output in tx.output.iter() {
+            let addr = script_to_addr(output.script_pubkey.clone());
+            if addr == new_addr {
+                has_new_addr = true;
+            }
+        }
+
+        assert!(has_new_addr);
+    }
+
+    #[test]
+    fn test_break_multiscript_template() {
+        //tx: &mut Transaction, change_addr: Option<Address>
+        let tx_hex = String::from("010000000001014c2686e762e0b260e7e146b5c15978c0b9366d80497b030390d91dc4ecf88f460100000000ffffffff02c4d600000000000017a914b607b1d108813cd10ae75e7b39305656ffea9523874b9b010000000000160014d86fe2f77cb04b0024a3783dc04b705b62c92f4502483045022100ce0ca2e3615c445d5fdedb4a289c7afcee303ef757c1539149a30a23b61f7c6102206a7d5a128224373213e778969d5a9428a52994f9e20ccac9d95e355e2230fd66012102b0747b954d5441f6df0b3daf2ca6bcbab7b6f3f42eda613789edd9d3a2dc40d800000000");
+        let change_addr = Address::from_str("bc1q8jnnr6d8wvtzymrngrzhu3p5hrff2cx9a6fshj").unwrap();
+
+        let mut tx = decode_txn(tx_hex);
+        let psbt = break_multiscript_template(&mut tx, Some(change_addr)).unwrap();
+
+        let extracted_tx = psbt.extract_tx();
+        let prev_tx_hex = String::from("01000000000101cb1c255d626dfbaea3557588725c779ebac6469e2c86a1d8647e6768751920100100000000ffffffff0259581000000000001600144c4afd82a9872b87836f0a4ee60250a0b857d0eaeb81020000000000160014ed7118d50af8e7e1f388d94972c23d5bb471c265024730440220199e11cffdc827ca91852416aa3263bdfadd95cd76c400f81e236a5cabcce18502202a4fe3cb84fe318d0c886e488d0b5ff099c6adfaa4bfce53a8d94bdb759dc1330121026c5f4446e09a7069f1b2bc35baf6a0ad9d7ed257fce5eac027a1c8466023fd5800000000");
+        let analysis_result = check_multi_script(&extracted_tx, prev_tx_hex);
+
+        
+        let expected_result = AnalysisResult {
+            heuristic: Heuristics::Multiscript,
+            result: false,
+            details: String::from("Single-script"),
+            template: false,
+            change_addr: None,
+        };
+
+        assert_eq!(expected_result.heuristic, analysis_result.heuristic);
+        assert_eq!(expected_result.result, analysis_result.result);
+        assert_eq!(expected_result.details, analysis_result.details);
+        assert_eq!(expected_result.change_addr, None);
+
     }
 }
