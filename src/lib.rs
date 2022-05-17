@@ -2,8 +2,8 @@ use bitcoin::consensus::deserialize;
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::psbt::{self, PartiallySignedTransaction};
 use bitcoin::util::address::{self, Address};
-use bitcoin::{AddressType, Network, Script, Transaction, TxOut};
-use std::fmt;
+use bitcoin::{AddressType, Network, Script, Transaction, TxOut, Txid};
+use std::{fmt, hash};
 
 extern crate hex as hexfunc;
 
@@ -279,19 +279,11 @@ pub fn check_equaloutput_coinjoin(tx: &Transaction) -> AnalysisResult {
     };
 }
 
-pub fn check_unnecessary_input(
-    tx: &Transaction,
-    prev_txns: &HashMap<String, String>,
-) -> AnalysisResult {
-    // 1. check if total number of output is two
-    // 2. get the value of each input and output in the transaction
-    // 3. get the different permutations of the inputs
-    // 4. For each output, check for unnecessary inputs using the permutation
+fn compute_unnecessary_inputs(tx: &Transaction, prev_txns: &HashMap<String, String>) -> Vec<bool> {
     const SAT_PER_BTC: f64 = 100_000_000.0;
-
     let outputs = tx.output.clone();
-    // let inputs = tx.input;
-    let mut result = false;
+
+    let mut assert_unnecessary_inputs: Vec<bool> = vec![false; outputs.len()];
 
     if outputs.len() == 2 {
         let mut input_values = Vec::new();
@@ -312,7 +304,6 @@ pub fn check_unnecessary_input(
 
         let permutated_inputs = permute::permute(input_values.clone());
         println!("permuted inputs: {:#?}", permutated_inputs);
-        let mut assert_unnecessary_inputs: Vec<bool> = vec![false; output_values.len()];
 
         for (output_index, &output) in output_values.iter().enumerate() {
             for values in permutated_inputs.iter() {
@@ -328,9 +319,20 @@ pub fn check_unnecessary_input(
                 }
             }
         }
-
-        result = assert_unnecessary_inputs.iter().all(|&x| x);
     }
+    return assert_unnecessary_inputs;
+}
+
+pub fn check_unnecessary_input(
+    tx: &Transaction,
+    prev_txns: &HashMap<String, String>,
+) -> AnalysisResult {
+    // 1. check if total number of output is two
+    // 2. get the value of each input and output in the transaction
+    // 3. get the different permutations of the inputs
+    // 4. For each output, check for unnecessary inputs using the permutation
+
+    let result = compute_unnecessary_inputs(tx, prev_txns).iter().all(|&x| x);
 
     return AnalysisResult {
         heuristic: Heuristics::UnnecessaryInput,
@@ -467,7 +469,7 @@ pub fn transaction_analysis(
 }
 
 pub fn generate_transaction_template(
-    utxo_set: Option<Vec<TxOut>>,
+    utxo_set: Option<HashMap<(Txid, u32), TxOut>>,
     tx_hex: String,
     change_addr: Option<Address>,
     analysis_results: Vec<AnalysisResult>,
@@ -482,6 +484,7 @@ pub fn generate_transaction_template(
     //
     // Address-reuse, multiscript, unnecessary-inputs
     let mut tx = decode_txn(tx_hex);
+    let utxos = utxo_set.unwrap();
     let mut passed_analysis = Vec::new();
     let mut transaction_template: Option<PartiallySignedTransaction> = None;
 
@@ -506,21 +509,28 @@ pub fn generate_transaction_template(
         if analyzed.heuristic == Heuristics::Multiscript {
             //break_multiscript_template(&)
             if analyzed.heuristic == Heuristics::Multiscript {
-               let result = break_multiscript_template(&mut tx, change_addr).unwrap();
-               transaction_template = Some(result);
-               return transaction_template;
+                let result = break_multiscript_template(&mut tx, change_addr).unwrap();
+                transaction_template = Some(result);
+                return transaction_template;
             }
             todo!();
         }
 
         if analyzed.heuristic == Heuristics::UnnecessaryInput {
-            //break_multiscript_template(&)
-
-            todo!();
+            //break_unnecessary_input_template(&)
+            break_unnecessary_input_template(&utxos, &mut tx);
         }
     }
 
     return transaction_template;
+}
+
+fn break_unnecessary_input_template(utxos: &HashMap<(Txid, u32), TxOut>, tx: &mut Transaction) {
+    // 1. grab the utxo set
+    // 2. keep adding inputs till you have unnecessary inputs
+    // for each of the outputs
+    // 3. the inputs are selected at random
+    // compute_unnecessary_inputs(tx, prev_txns)
 }
 
 fn break_multiscript_template(tx: &mut Transaction, change_addr: Option<Address>) -> Result<Psbt> {
@@ -538,10 +548,9 @@ fn break_multiscript_template(tx: &mut Transaction, change_addr: Option<Address>
     }
 
     for output in tx.output.iter_mut() {
-        let output_addr_type = Address::address_type(&script_to_addr(output.script_pubkey.clone())).unwrap();
-        if change_addr_type
-            != output_addr_type
-        {
+        let output_addr_type =
+            Address::address_type(&script_to_addr(output.script_pubkey.clone())).unwrap();
+        if change_addr_type != output_addr_type {
             if output_addr_type.to_string() == "p2sh" {
                 let script = Script::new().to_p2sh();
                 let new_change_output = TxOut {
