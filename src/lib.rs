@@ -2,8 +2,8 @@ use bitcoin::consensus::deserialize;
 use bitcoin::hashes::hex::FromHex;
 use bitcoin::psbt::{self, PartiallySignedTransaction};
 use bitcoin::util::address::{self, Address};
-use bitcoin::{AddressType, Network, Script, Transaction, TxOut, Txid, Witness, TxIn, OutPoint };
-use std::{fmt, hash};
+use bitcoin::{AddressType, Network, OutPoint, Script, Transaction, TxIn, TxOut, Txid, Witness};
+use std::{fmt};
 
 extern crate hex as hexfunc;
 
@@ -280,26 +280,22 @@ pub fn check_equaloutput_coinjoin(tx: &Transaction) -> AnalysisResult {
 }
 
 fn compute_unnecessary_inputs(tx: &Transaction, prev_txns: &Vec<TxOut>) -> Vec<bool> {
-    
     const SAT_PER_BTC: f64 = 100_000_000.0;
     let outputs = tx.output.clone();
     let mut input_values = Vec::new();
 
     //Get input from prev txs outputs
     for v in prev_txns {
-        input_values.push(v.value as f64/ SAT_PER_BTC);
+        input_values.push(v.value as f64 / SAT_PER_BTC);
     }
 
     let mut assert_unnecessary_inputs: Vec<bool> = vec![false; outputs.len()];
 
     if outputs.len() == 2 {
-        
         let output_values: Vec<f64> = outputs
             .iter()
             .map(|out| out.value as f64 / SAT_PER_BTC)
             .collect();
-
-       
 
         let permutated_inputs = permute::permute(input_values.clone());
         println!("permuted inputs: {:#?}", permutated_inputs);
@@ -333,7 +329,6 @@ pub fn check_unnecessary_input(
     //compute <txid, txout>
     let mut outputs = Vec::new();
 
-
     for input in tx.input.clone() {
         let input_index = input.previous_output.vout;
         let tx_id = input.previous_output.txid.to_string();
@@ -342,7 +337,6 @@ pub fn check_unnecessary_input(
         let vout_output = decoded_tx.output[input_index as usize].clone();
         outputs.push(vout_output);
     }
-
 
     let result = compute_unnecessary_inputs(tx, &outputs).iter().all(|&x| x);
 
@@ -530,14 +524,19 @@ pub fn generate_transaction_template(
 
         if analyzed.heuristic == Heuristics::UnnecessaryInput {
             //break_unnecessary_input_template(&)
-            break_unnecessary_input_template(&utxos, &mut tx);
+            let result = break_unnecessary_input_template(&utxos, &mut tx).unwrap();
+            transaction_template = Some(result);
+            return transaction_template;
         }
     }
 
     return transaction_template;
 }
 
-fn break_unnecessary_input_template(utxos: &HashMap<(Txid, u32), TxOut>, tx: &mut Transaction) -> Result<Psbt> {
+fn break_unnecessary_input_template(
+    utxos: &HashMap<(Txid, u32), TxOut>,
+    tx: &mut Transaction,
+) -> Result<Psbt> {
     // 1. grab the utxo set
     // 2. keep adding inputs till you have unnecessary inputs
     // for each of the outputs
@@ -551,7 +550,6 @@ fn break_unnecessary_input_template(utxos: &HashMap<(Txid, u32), TxOut>, tx: &mu
     let mut utxo_iter = utxos.keys();
 
     loop {
-
         let result = compute_unnecessary_inputs(tx, &outputs).iter().all(|&x| x);
 
         //if result is false, add input to transaction from utxos set.
@@ -576,16 +574,14 @@ fn break_unnecessary_input_template(utxos: &HashMap<(Txid, u32), TxOut>, tx: &mu
                         witness: Witness::default(),
                     };
                     tx.input.push(tx_in);
-                },
-                None => { 
+                }
+                None => {
                     // return with an impossible message to user
                     let error = psbt::Error::NoMorePairs;
                     return Err(Error::Psbt(error));
                 }
             }
         }
-
-
     }
 
     let psbt = Psbt::from_unsigned_tx(tx.clone())?;
@@ -879,7 +875,6 @@ mod tests {
         let prev_tx_hex = String::from("01000000000101cb1c255d626dfbaea3557588725c779ebac6469e2c86a1d8647e6768751920100100000000ffffffff0259581000000000001600144c4afd82a9872b87836f0a4ee60250a0b857d0eaeb81020000000000160014ed7118d50af8e7e1f388d94972c23d5bb471c265024730440220199e11cffdc827ca91852416aa3263bdfadd95cd76c400f81e236a5cabcce18502202a4fe3cb84fe318d0c886e488d0b5ff099c6adfaa4bfce53a8d94bdb759dc1330121026c5f4446e09a7069f1b2bc35baf6a0ad9d7ed257fce5eac027a1c8466023fd5800000000");
         let analysis_result = check_multi_script(&extracted_tx, prev_tx_hex);
 
-        
         let expected_result = AnalysisResult {
             heuristic: Heuristics::Multiscript,
             result: false,
@@ -892,6 +887,5 @@ mod tests {
         assert_eq!(expected_result.result, analysis_result.result);
         assert_eq!(expected_result.details, analysis_result.details);
         assert_eq!(expected_result.change_addr, None);
-
     }
 }
