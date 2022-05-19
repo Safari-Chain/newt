@@ -64,7 +64,7 @@ pub struct AnalysisResult {
     change_addr: Option<Address>,
 }
 
-fn decode_txn(hex_str: String) -> Transaction {
+pub fn decode_txn(hex_str: String) -> Transaction {
     let tx_bytes = Vec::from_hex(&hex_str).unwrap();
     let tx = deserialize(&tx_bytes).unwrap();
     //println!("transaction details: {:#?}", &tx);
@@ -159,7 +159,7 @@ pub fn check_multi_script(txn: &Transaction, txn_in: String) -> AnalysisResult {
         heuristic: Heuristics::Multiscript,
         result,
         details: String::from(details),
-        template: false,
+        template: true,
         change_addr: None,
     };
 }
@@ -298,7 +298,6 @@ fn compute_unnecessary_inputs(tx: &Transaction, prev_txns: &Vec<TxOut>) -> Vec<b
             .collect();
 
         let permutated_inputs = permute::permute(input_values.clone());
-        println!("permuted inputs: {:#?}", permutated_inputs);
 
         for (output_index, &output) in output_values.iter().enumerate() {
             for values in permutated_inputs.iter() {
