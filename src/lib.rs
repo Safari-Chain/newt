@@ -16,7 +16,7 @@ type Result<T> = std::result::Result<T, Error>;
 const NETWORK: Network = Network::Bitcoin;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-enum Error {
+pub enum Error {
     /// PSBT error.
     Psbt(psbt::Error),
 }
@@ -532,7 +532,7 @@ pub fn generate_transaction_template(
     return transaction_template;
 }
 
-fn break_unnecessary_input_template(
+pub fn break_unnecessary_input_template(
     utxos: &HashMap<(Txid, u32), TxOut>,
     tx: &mut Transaction,
 ) -> Result<Psbt> {
@@ -588,7 +588,7 @@ fn break_unnecessary_input_template(
     return Ok(psbt);
 }
 
-fn break_multiscript_template(tx: &mut Transaction, change_addr: Option<Address>) -> Result<Psbt> {
+pub fn break_multiscript_template(tx: &mut Transaction, change_addr: Option<Address>) -> Result<Psbt> {
     let change_addr_type = address::Address::address_type(&change_addr.clone().unwrap()).unwrap();
     let mut new_outputs = Vec::new();
     let mut change_output_value: Option<u64> = None;
@@ -641,7 +641,7 @@ fn break_multiscript_template(tx: &mut Transaction, change_addr: Option<Address>
     return Ok(psbt);
 }
 
-fn break_address_reuse_template(
+pub fn break_address_reuse_template(
     tx: &mut Transaction,
     new_addr: Address,
     analysis_result: &AnalysisResult,

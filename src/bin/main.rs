@@ -1,6 +1,8 @@
 use clap::Parser;
-use newt::{ transaction_analysis, check_common_input_ownership, check_unnecessary_input, check_multi_script, decode_txn, check_address_reuse, check_round_number, check_equaloutput_coinjoin };
+use bitcoin::util::address::{self, Address};
+use newt::{ break_multiscript_template, break_address_reuse_template, transaction_analysis, check_common_input_ownership, check_unnecessary_input, check_multi_script, decode_txn, check_address_reuse, check_round_number, check_equaloutput_coinjoin };
 use std::collections::HashMap;
+use std::str::FromStr;
 
 #[derive(Parser)]
 #[clap(author, version, about, long_about = None)]
@@ -26,6 +28,12 @@ struct Cli {
 
     #[clap(long)]
     analysis: Option<String>,
+
+    #[clap(long)]
+    break_address_reuse: Option<String>,
+
+    #[clap(long)]
+    break_multiscript: Option<String>,
 
 }
 
@@ -88,6 +96,32 @@ fn main() {
         let analysis_result_list = transaction_analysis(tx_hex.to_owned(), false, prev_txns);
 
         println!("{:#?}", analysis_result_list);
+    }
+
+    if let Some(tx_hex) = cli.break_address_reuse.as_deref() {
+        let curr_tx_hex = tx_hex.to_owned();
+        let mut curr_tx = decode_txn(curr_tx_hex.clone());
+        let mut prev_txns = HashMap::new();
+        prev_txns.insert(String::from("1c3ea699a24a17dd99533837e5a9cde84e0517033cf1deba18e9baca53c305d2"), String::from("010000000195d76b18853ab39712192be5f90bf350302eafa0c51067ca59af7bcb183b4025090000006b483045022100ef3c03a1e200a51da0df7117f0a7bcdef3c72b6c269be5123b404e5999b3a00002205e64a0392bd4dc2c7bc32f4a7978ddfbb440e0d9e504a71404fd8e05f88e3db001210256ba3dec93e8fda4485a8dea428d94aa968b509ec4ac430bf0de5f9027f988c8ffffffff0a09f006000000000017a91415adeb31f7415cbabafd07af8d90875d350655bc87989b58000000000017a914f384976b6e07df4c9bd7a212995ac4509e6c7d4787bc9b0c00000000001976a9149fdd37db4058fce4eeff3fca4bc5551590c9187d88ac5e163500000000001976a914bd28982b11113bfa720c3ff34ac9d09f8c6fb40f88ac806f4a0c000000001976a914e16873335e04467e02d8eb143f1302c685b8f31f88ac88e55a000000000017a9149907fae571a857e66ff83c4d70fa82e1286b06be876c796202000000001976a914981476e141da8d847b814b832e6402cd7338c6d188ac5896ec01000000001976a914c288197330741bc85587f4f00ee48c66e3be319488ac7f8446060000000017a9145d76ef27663a41a4a054d00886367e4a56e24e06874ffe9cc3000000001976a914e5fc50dec180de9a3c1c8f0309506321ae88def988ac00000000"));
+        let analysis_result_list = transaction_analysis(curr_tx_hex, false, prev_txns.clone());
+        let new_addr = Address::from_str("bc1q8jnnr6d8wvtzymrngrzhu3p5hrff2cx9a6fshj").unwrap();
+        let psbt_tx = break_address_reuse_template(
+            &mut curr_tx,
+            new_addr.clone(),
+            analysis_result_list.get(0).unwrap(),
+        )
+        .unwrap();
+
+        println!("{:#?}", psbt_tx);
+    }
+
+    if let Some(tx_hex) = cli.break_multiscript.as_deref() {
+        let change_addr = Address::from_str("bc1q8jnnr6d8wvtzymrngrzhu3p5hrff2cx9a6fshj").unwrap();
+
+        let mut tx = decode_txn(tx_hex.to_owned());
+        let psbt = break_multiscript_template(&mut tx, Some(change_addr)).unwrap();
+
+        println!("{:#?}", psbt);
     }
 
 }
