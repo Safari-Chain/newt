@@ -1,6 +1,11 @@
-use clap::Parser;
 use bitcoin::util::address::{self, Address};
-use newt::{ break_multiscript_template, break_address_reuse_template, transaction_analysis, check_common_input_ownership, check_unnecessary_input, check_multi_script, decode_txn, check_address_reuse, check_round_number, check_equaloutput_coinjoin };
+use clap::Parser;
+use newt::{
+    break_address_reuse_template, break_multiscript_template, break_unnecessary_input_template,
+    check_address_reuse, check_common_input_ownership, check_equaloutput_coinjoin,
+    check_multi_script, check_round_number, check_unnecessary_input, decode_txn,
+    transaction_analysis,
+};
 use std::collections::HashMap;
 use std::str::FromStr;
 
@@ -35,11 +40,12 @@ struct Cli {
     #[clap(long)]
     break_multiscript: Option<String>,
 
+    #[clap(long)]
+    break_unnecessary_input: Option<String>,
 }
 
 fn main() {
     let cli = Cli::parse();
-
 
     if let Some(tx_hex) = cli.multiscript.as_deref() {
         let tx = decode_txn(tx_hex.to_owned());
@@ -54,7 +60,6 @@ fn main() {
         let curr_tx = decode_txn(tx_hex.to_owned());
         let analysis_result = check_address_reuse(&curr_tx, &prev_txns);
         println!("{:#?}", analysis_result);
-
     }
 
     if let Some(tx_hex) = cli.roundnumber.as_deref() {
@@ -124,6 +129,19 @@ fn main() {
         println!("{:#?}", psbt);
     }
 
+    /*if let Some(tx_hex) = cli.break_unnecessary_input.as_deref() {
+        let tx = decode_txn(tx_hex.to_owned());
+        let mut prev_txns = HashMap::new();
+        prev_txns.insert(String::from("44141d713c616a49b48f6289d0a94c04498ce84db6106aa81078840a221d0bf5"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050295000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
+        prev_txns.insert(String::from("b9865cb28d3e17ae4779f6be743a0cd5943240077f8084404ca82c39b5b24bd1"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050288000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
+        prev_txns.insert(String::from("e20a44743301a90d009aa8a6dd32f95b39bf8cfe4d05ecc957657777e022bb79"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff05029c000101ffffffff0200f90295000000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
+        
+
+        let mut tx = decode_txn(tx_hex.to_owned());
+        let psbt = break_unnecessary_input_template(utxo, &mut tx).unwrap();
+
+        println!("{:#?}", psbt);
+    }*/
 }
 
 /*
