@@ -586,6 +586,7 @@ pub fn break_unnecessary_input_template(
                     tx.input.push(tx_in);
                     let utxo_output = decode_txn(utxos.get(key).unwrap().to_owned());
                     outputs.push(utxo_output.output.get(key.1 as usize).unwrap().clone());
+                    prev_txns.insert(key.1.to_string(), utxos.get(key).unwrap().clone());
                 }
                 None => {
                     // return with an impossible message to user
