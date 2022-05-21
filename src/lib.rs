@@ -846,9 +846,9 @@ mod tests {
 
         let expected_analysis_result = AnalysisResult {
             heuristic: Heuristics::UnnecessaryInput,
-            result: false,
+            result: true,
             details: String::from("Found unnecessary inputs in transaction"),
-            template: false,
+            template: true,
             change_addr: None,
         };
         println!("Analysis result list: {:#?}", analysis_result_list);
