@@ -490,7 +490,7 @@ pub fn generate_transaction_template(
     //
     // Address-reuse, multiscript, unnecessary-inputs
     let mut tx = decode_txn(tx_hex);
-    let prev_txs = prev_txns.unwrap();
+    let mut prev_txs = prev_txns.unwrap();
     let utxos = utxo_set.unwrap();
     let mut passed_analysis = Vec::new();
     let mut transaction_template: Option<PartiallySignedTransaction> = None;
@@ -525,7 +525,7 @@ pub fn generate_transaction_template(
 
         if analyzed.heuristic == Heuristics::UnnecessaryInput {
             //break_unnecessary_input_template(&)
-            let result = break_unnecessary_input_template(&prev_txs, &utxos, &mut tx).unwrap();
+            let result = break_unnecessary_input_template(&mut prev_txs, &utxos, &mut tx).unwrap();
             transaction_template = Some(result);
             return transaction_template;
         }
@@ -535,7 +535,7 @@ pub fn generate_transaction_template(
 }
 
 pub fn break_unnecessary_input_template(
-    prev_txns: &HashMap<String, String>,
+    prev_txns: &mut HashMap<String, String>,
     utxos: &HashMap<(Txid, u64), String>,
     tx: &mut Transaction,
 ) -> Result<Psbt> {
@@ -560,7 +560,6 @@ pub fn break_unnecessary_input_template(
 
     loop {
         let result = compute_unnecessary_inputs(tx, &outputs).iter().all(|&x| x);
-        println!("{:?}", result);
 
         //if result is false, add input to transaction from utxos set.
         //else break out of the loop and create psbt.
@@ -586,7 +585,7 @@ pub fn break_unnecessary_input_template(
                     tx.input.push(tx_in);
                     let utxo_output = decode_txn(utxos.get(key).unwrap().to_owned());
                     outputs.push(utxo_output.output.get(key.1 as usize).unwrap().clone());
-                    prev_txns.insert(key.1.to_string(), utxos.get(key).unwrap().clone());
+                    prev_txns.insert(key.0.to_string(), utxos.get(key).unwrap().clone());
                 }
                 None => {
                     // return with an impossible message to user
@@ -915,9 +914,6 @@ mod tests {
         let tx_hex = String::from("0200000002060170f2fedaa27bdb417305ac183fa53fc1387eba48aabbe6dcd62efdbd92450000000000ffffffff0a30a1e357f69fb779dd1e3e7afaabbe81bdd492abb6fdff5acd7a96deb0ac190000000000ffffffff020057d347010000001600140931cb36935b8d27010bb7892eb2501ea62af71000286bee0000000016001401e1010b82f73a6451eb03543a55b48df2cd372b00000000");
         let mut tx = decode_txn(tx_hex);
         let mut prev_txns = HashMap::new();
-        // prev_txns.insert(String::from("44141d713c616a49b48f6289d0a94c04498ce84db6106aa81078840a221d0bf5"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050295000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
-        // prev_txns.insert(String::from("b9865cb28d3e17ae4779f6be743a0cd5943240077f8084404ca82c39b5b24bd1"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050288000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
-        // prev_txns.insert(String::from("e20a44743301a90d009aa8a6dd32f95b39bf8cfe4d05ecc957657777e022bb79"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff05029c000101ffffffff0200f90295000000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
 
         prev_txns.insert(String::from("4592bdfd2ed6dce6bbaa48ba7e38c13fa53f18ac057341db7ba2dafef2700106"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050282000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
         prev_txns.insert(String::from("19acb0de967acd5afffdb6ab92d4bd81beabfa7a3e1edd79b79ff657e3a1300a"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050285000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
@@ -957,10 +953,9 @@ mod tests {
             String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050289000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000")
         );
 
-        let psbt = break_unnecessary_input_template(&prev_txns, &utxos, &mut tx).unwrap();
+        let psbt = break_unnecessary_input_template(&mut prev_txns, &utxos, &mut tx).unwrap();
         let extracted_tx = psbt.extract_tx();
         let analysis_result = check_unnecessary_input(&extracted_tx, &prev_txns);
-        println!("{:#?}", extracted_tx);
 
         assert_eq!(analysis_result.heuristic, Heuristics::UnnecessaryInput);
         assert_eq!(analysis_result.result, false);
