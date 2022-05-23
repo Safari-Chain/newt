@@ -219,26 +219,48 @@ pub fn check_address_reuse(
 pub fn check_round_number(tx: &Transaction) -> AnalysisResult {
     //assuming payments have only 2 decimal places and only applies
     //to simple spend
-    const SAT_PER_BTC: f64 = 100_000_000.0;
-
-    let output_values: Vec<f64> = tx
+    const PRECISION: u64 = 5;
+    let output_values: Vec<u64> = tx
         .output
         .iter()
-        .map(|out| out.value as f64 / SAT_PER_BTC)
+        .map(|out| out.value )
         .collect();
 
-    let mut round_number: f64 = 0.0;
-    for num in output_values {
-        if (num * 10000.0).floor() as u64 % 10 == 0 {
-            round_number = num
+
+    let mut check_freq_res = vec![true; output_values.len()];
+    for (i, output_value) in output_values.iter().enumerate() {
+        let mut prev_char = ' ';
+        for (j, c) in output_value.to_string().chars().collect::<Vec<char>>().iter().enumerate() {
+            if j != 0 && prev_char != *c {
+                check_freq_res[i] = false;
+            }
+    
+            prev_char = *c;
+    
         }
     }
 
-    let result = round_number != 0.0;
+    let passed_freq_test = check_freq_res.iter().any(|x| *x);
+    let mut result = false;
 
+    if !passed_freq_test {
+        for output_value in output_values.clone() {
+            for i in 0..PRECISION {
+                if  output_value %  10u64.pow(i as u32) != 0 {
+                    result = true;
+                }
+            }
+        
+        }
+    }
+    
+
+   
+    
+    
     return AnalysisResult {
         heuristic: Heuristics::RoundNumber,
-        result,
+        result: passed_freq_test || result,
         details: String::from("Found round number in outputs"),
         template: false,
         change_addr: None,
