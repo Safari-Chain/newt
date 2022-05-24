@@ -1,4 +1,4 @@
-use bitcoin::util::address::{self, Address};
+use bitcoin::util::address::{ Address};
 use bitcoin::{ Txid };
 use bitcoin::hashes::hex::FromHex;
 use clap::Parser;

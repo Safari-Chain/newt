@@ -632,7 +632,9 @@ pub fn break_multiscript_template(
 ) -> Result<Psbt> {
     let change_addr_type = address::Address::address_type(&change_addr.clone().unwrap()).unwrap();
     let mut new_outputs = Vec::new();
+    #[allow(unused_assignments)]
     let mut change_output_value: Option<u64> = None;
+    #[allow(unused_assignments)]
     let mut payment_output: Option<TxOut> = None;
 
     //clear scriptsig in inputs
@@ -870,11 +872,13 @@ mod tests {
         let analysis_result_list = transaction_analysis(curr_tx_hex, false, prev_txns);
 
         let expected_analysis_result = AnalysisResult {
-            heuristic: Heuristics::UnnecessaryInput,
+            heuristic: Heuristics::AddressReuse,
             result: true,
-            details: String::from("Found unnecessary inputs in transaction"),
+            details: String::from("Input address reuse in outputs"),
             template: true,
-            change_addr: None,
+            change_addr:  Some(
+                Address::from_str("1JFBLogNB1JgRCbXZmzmaiUaDqu5Lsda69").unwrap(),
+            ),
         };
         println!("Analysis result list: {:#?}", analysis_result_list);
 
