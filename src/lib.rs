@@ -459,7 +459,10 @@ pub fn transaction_analysis(
                 let txn_in = prev_txns.values().next().unwrap().to_owned();
                 analyses_result.push(check_multi_script(&tx, txn_in));
             }
-            analyses_result.push(check_unnecessary_input(&tx, &prev_txns));
+
+            if prev_txns.len() > 1 {
+                analyses_result.push(check_unnecessary_input(&tx, &prev_txns));
+            }
         }
 
         if transaction_type == TransactionType::Sweep {
