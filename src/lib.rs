@@ -1,19 +1,19 @@
-use bitcoin::consensus::deserialize;
-use bitcoin::hashes::hex::FromHex;
+use crate::address_reuse::{break_address_reuse_template, check_address_reuse};
+use crate::common_input_ownership::check_common_input_ownership;
+use crate::equal_output_coinjoin::check_equaloutput_coinjoin;
+use crate::multiscript::{break_multiscript_template, check_multi_script};
+use crate::roundnumber::check_round_number;
+use crate::unnecessary_inputs::{break_unnecessary_input_template, check_unnecessary_input};
+
+use crate::utils::decode_txn;
 use bitcoin::psbt::{self, PartiallySignedTransaction};
-use bitcoin::util::address::{self, Address};
-use bitcoin::{AddressType, Network, OutPoint, Script, Transaction, TxIn, TxOut, Txid, Witness};
+use bitcoin::util::address::Address;
+use bitcoin::{Transaction, Txid};
 use std::fmt;
 
 extern crate hex as hexfunc;
 
-use permute;
 use std::collections::HashMap;
-
-type Psbt = PartiallySignedTransaction;
-type Result<T> = std::result::Result<T, Error>;
-
-const NETWORK: Network = Network::Bitcoin;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
@@ -64,36 +64,13 @@ pub struct AnalysisResult {
     change_addr: Option<Address>,
 }
 
-pub fn decode_txn(hex_str: String) -> Transaction {
-    let tx_bytes = Vec::from_hex(&hex_str).unwrap();
-    let tx = deserialize(&tx_bytes).unwrap();
-    //println!("transaction details: {:#?}", &tx);
-    return tx;
-}
-
-fn script_to_addr(script: Script) -> address::Address {
-    let addr = address::Address::from_script(&script, NETWORK).unwrap();
-    addr
-}
-
-fn get_address_type(vouts: Vec<TxOut>) -> Vec<AddressType> {
-    let address_type = vouts
-        .into_iter()
-        .map(|vout| {
-            let addr = script_to_addr(vout.script_pubkey.clone());
-            let addr_type = address::Address::address_type(&addr).unwrap();
-            return addr_type;
-        })
-        .collect();
-    return address_type;
-}
-
-fn parse_input_tx(txn_in: String, vout_index: usize) -> AddressType {
-    let tx = decode_txn(txn_in);
-    let outputs = tx.output;
-    let addr_type = *get_address_type(outputs.clone()).get(vout_index).unwrap();
-    return addr_type;
-}
+pub mod address_reuse;
+pub mod common_input_ownership;
+pub mod equal_output_coinjoin;
+pub mod multiscript;
+pub mod roundnumber;
+pub mod unnecessary_inputs;
+pub mod utils;
 
 fn is_sweep(tx: &Transaction) -> bool {
     let inputs = &tx.input;
@@ -121,294 +98,6 @@ fn is_batch_spend(tx: &Transaction) -> bool {
     let outputs = &tx.output;
 
     return inputs.len() >= 1 && outputs.len() > 2;
-}
-
-pub fn check_multi_script(txn: &Transaction, txn_in: String) -> AnalysisResult {
-    let tx_in = txn.input.get(0).unwrap().clone();
-    let vout_index = tx_in.previous_output.vout;
-
-    let outputs = txn.output.clone();
-    let addr_types = get_address_type(outputs.clone()).clone();
-    let first_addr_type = *addr_types.get(0).unwrap();
-
-    let output_script_types: Vec<String> = addr_types
-        .into_iter()
-        .map(|addr| addr.to_string())
-        .collect();
-    let input_script_type = parse_input_tx(txn_in, vout_index as usize).to_string();
-
-    let mut compare_vouts = false;
-    let mut compare_inp_out_addrtype = false;
-    for output_script_type in output_script_types.iter() {
-        if input_script_type == *output_script_type {
-            compare_inp_out_addrtype = true;
-        }
-        if first_addr_type.to_string() != *output_script_type {
-            compare_vouts = true;
-        }
-    }
-
-    let result = compare_inp_out_addrtype && compare_vouts;
-
-    let details = if result {
-        "Multi-script"
-    } else {
-        "Single-script"
-    };
-    return AnalysisResult {
-        heuristic: Heuristics::Multiscript,
-        result,
-        details: String::from(details),
-        template: true,
-        change_addr: None,
-    };
-}
-
-pub fn check_address_reuse(
-    txn: &Transaction,
-    prev_txns: &HashMap<String, String>,
-) -> AnalysisResult {
-    let mut input_addrs = Vec::new();
-
-    for input in txn.input.iter() {
-        //traverse the inputs
-        //for every Outpoint aka (txid, vout), get transaction hex
-        //in hash map, decode it. Get the output corresponding to the
-        //vout from the outpoint. Extract the Address from this and
-        //store it in an input address vector.
-        let input_index = input.previous_output.vout;
-        let tx_id = input.previous_output.txid.to_string();
-        //Todo: handle case where hash map return none
-        let tx_hex = prev_txns.get(&tx_id).unwrap();
-        let decoded_tx = decode_txn(tx_hex.to_owned());
-        let vout_output = decoded_tx.output[input_index as usize].clone();
-        let input_addr = script_to_addr(vout_output.script_pubkey.clone());
-        input_addrs.push(input_addr)
-    }
-
-    let output_addrs: Vec<Address> = txn
-        .output
-        .iter()
-        .map(|tx_out| {
-            return script_to_addr(tx_out.script_pubkey.clone());
-        })
-        .collect();
-
-    println!("{:#?}", output_addrs);
-    println!("{:#?}", input_addrs);
-    let mut result: bool = false;
-    let mut reuse_addr: Option<Address> = None;
-    for input_addr in input_addrs.iter() {
-        for out_addr in output_addrs.iter() {
-            if *input_addr == *out_addr {
-                result = true;
-                reuse_addr = Some(input_addr.clone());
-            }
-        }
-    }
-
-    return AnalysisResult {
-        heuristic: Heuristics::AddressReuse,
-        result,
-        details: String::from("Input address reuse in outputs"),
-        template: true,
-        change_addr: reuse_addr,
-    };
-}
-
-pub fn check_round_number(tx: &Transaction) -> AnalysisResult {
-    //assuming payments have only 2 decimal places and only applies
-    //to simple spend
-    const PRECISION: u64 = 5;
-    let output_values: Vec<u64> = tx
-        .output
-        .iter()
-        .map(|out| out.value )
-        .collect();
-
-
-    let mut check_freq_res = vec![true; output_values.len()];
-    for (i, output_value) in output_values.iter().enumerate() {
-        let mut prev_char = ' ';
-        for (j, c) in output_value.to_string().chars().collect::<Vec<char>>().iter().enumerate() {
-            if j != 0 && prev_char != *c {
-                check_freq_res[i] = false;
-            }
-    
-            prev_char = *c;
-    
-        }
-    }
-
-    let passed_freq_test = check_freq_res.iter().any(|x| *x);
-    let mut result = false;
-
-    if !passed_freq_test {
-        for output_value in output_values.clone() {
-            for i in 0..PRECISION {
-                if  output_value %  10u64.pow(i as u32) != 0 {
-                    result = true;
-                }
-            }
-        
-        }
-    }
-    
-
-   
-    
-    
-    return AnalysisResult {
-        heuristic: Heuristics::RoundNumber,
-        result: passed_freq_test || result,
-        details: String::from("Found round number in outputs"),
-        template: false,
-        change_addr: None,
-    };
-}
-
-pub fn check_equaloutput_coinjoin(tx: &Transaction) -> AnalysisResult {
-    // Assumption: we have a coinjoin transaction
-    // check the output for equal payment amounts
-    // return an analysis result
-    const SAT_PER_BTC: f64 = 100_000_000.0;
-
-    let output_values: Vec<f64> = tx
-        .output
-        .iter()
-        .map(|out| out.value as f64 / SAT_PER_BTC)
-        .collect();
-    let mut result = false;
-    for (index, &value) in output_values.iter().enumerate() {
-        for (i, &v) in output_values.iter().enumerate() {
-            if index == i {
-                continue;
-            }
-
-            if value == v {
-                result = true;
-                break;
-            }
-        }
-    }
-
-    return AnalysisResult {
-        heuristic: Heuristics::Coinjoin,
-        result,
-        details: String::from("Found Equal Outputs Coinjoin"),
-        template: false,
-        change_addr: None,
-    };
-}
-
-fn compute_unnecessary_inputs(tx: &Transaction, prev_txns: &Vec<TxOut>) -> Vec<bool> {
-    const SAT_PER_BTC: f64 = 100_000_000.0;
-    let outputs = tx.output.clone();
-    let mut input_values = Vec::new();
-
-    //Get input from prev txs outputs
-    for v in prev_txns {
-        input_values.push(v.value as f64 / SAT_PER_BTC);
-    }
-
-    let mut assert_unnecessary_inputs: Vec<bool> = vec![false; outputs.len()];
-
-    if outputs.len() == 2 {
-        let output_values: Vec<f64> = outputs
-            .iter()
-            .map(|out| out.value as f64 / SAT_PER_BTC)
-            .collect();
-
-        let permutated_inputs = permute::permute(input_values.clone());
-
-        for (output_index, &output) in output_values.iter().enumerate() {
-            for values in permutated_inputs.iter() {
-                let mut sum_permuted_values: f64 = 0.0;
-                for (value_index, &value) in values.iter().enumerate() {
-                    sum_permuted_values += value;
-                    if sum_permuted_values >= output {
-                        if value_index < (values.len() - 1) {
-                            assert_unnecessary_inputs[output_index] = true;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-    }
-    return assert_unnecessary_inputs;
-}
-
-pub fn check_unnecessary_input(
-    tx: &Transaction,
-    prev_txns: &HashMap<String, String>,
-) -> AnalysisResult {
-    // 1. check if total number of output is two
-    // 2. get the value of each input and output in the transaction
-    // 3. get the different permutations of the inputs
-    // 4. For each output, check for unnecessary inputs using the permutation
-    //compute <txid, txout>
-    let mut outputs = Vec::new();
-
-    for input in tx.input.clone() {
-        let input_index = input.previous_output.vout;
-        let tx_id = input.previous_output.txid.to_string();
-        let tx_hex = prev_txns.get(&tx_id).unwrap();
-        let decoded_tx = decode_txn(tx_hex.to_owned());
-        let vout_output = decoded_tx.output[input_index as usize].clone();
-        outputs.push(vout_output);
-    }
-
-    let result = !compute_unnecessary_inputs(tx, &outputs).iter().all(|&x| x);
-
-    return AnalysisResult {
-        heuristic: Heuristics::UnnecessaryInput,
-        result,
-        details: String::from("Found unnecessary inputs in transaction"),
-        template: true,
-        change_addr: None,
-    };
-}
-
-pub fn check_common_input_ownership(
-    txn: &Transaction,
-    prev_txns: &HashMap<String, String>,
-) -> AnalysisResult {
-    //for every input in current transaction
-    //get address associate to that input using txid and associated tx
-    let mut input_addrs = Vec::new();
-    let mut result = false;
-
-    for input in txn.input.iter() {
-        //traverse the inputs
-        //for every Outpoint aka (txid, vout), get transaction hex
-        //in hash map, decode it. Get the output corresponding to the
-        //vout from the outpoint. Extract the Address from this and
-        //store it in an input address vector.
-        let input_index = input.previous_output.vout;
-        let tx_id = input.previous_output.txid.to_string();
-        //Todo: handle case where hash map return none
-        let tx_hex = prev_txns.get(&tx_id).unwrap();
-        let decoded_tx = decode_txn(tx_hex.to_owned());
-        let vout_output = decoded_tx.output[input_index as usize].clone();
-        let input_addr = script_to_addr(vout_output.script_pubkey.clone());
-        input_addrs.push(input_addr)
-    }
-
-    let first = &input_addrs[0];
-    for address in input_addrs.iter() {
-        if *first != *address {
-            result = true;
-        }
-    }
-
-    return AnalysisResult {
-        heuristic: Heuristics::CommonInputOwnership,
-        result,
-        details: String::from("Common Input Ownership found"),
-        template: false,
-        change_addr: None,
-    };
 }
 
 pub fn categorize_tx(tx: &Transaction, is_coinjoin: bool) -> Vec<TransactionType> {
@@ -559,168 +248,14 @@ pub fn generate_transaction_template(
     return transaction_template;
 }
 
-pub fn break_unnecessary_input_template(
-    prev_txns: &mut HashMap<String, String>,
-    utxos: &HashMap<(Txid, u64), String>,
-    tx: &mut Transaction,
-) -> Result<Psbt> {
-    // 1. grab the utxo set
-    // 2. keep adding inputs till you have unnecessary inputs
-    // for each of the outputs
-    // 3. the inputs are selected at random
-    // compute_unnecessary_inputs(tx, prev_txns)
-    //build outputs and pass to the compute function.
-    let mut outputs = Vec::new();
-    
-    for input in tx.input.iter() {
-        let input_index = input.previous_output.vout;
-        let tx_id = input.previous_output.txid.to_string();
-        let tx_hex = prev_txns.get(&tx_id).unwrap();
-        let decoded_tx = decode_txn(tx_hex.to_owned());
-        let vout_output = decoded_tx.output[input_index as usize].clone();
-        outputs.push(vout_output);
-    }
-
-    let mut utxo_iter = utxos.keys();
-
-    loop {
-        let result = compute_unnecessary_inputs(tx, &outputs).iter().all(|&x| x);
-
-        //if result is false, add input to transaction from utxos set.
-        //else break out of the loop and create psbt.
-        if result {
-            break;
-        } else {
-            //pick random utxo and add as input to tx
-            let next_utxo = utxo_iter.next();
-
-            match next_utxo {
-                Some(key) => {
-                    //let &val = utxos.get(key).unwrap();
-                    //create input and add to transaction
-                    let tx_in = TxIn {
-                        previous_output: OutPoint {
-                            txid: key.0,
-                            vout: key.1 as u32,
-                        },
-                        script_sig: Script::new(),
-                        sequence: 0xFFFFFFFF, // Ignore nSequence.
-                        witness: Witness::default(),
-                    };
-                    tx.input.push(tx_in);
-                    let utxo_output = decode_txn(utxos.get(key).unwrap().to_owned());
-                    outputs.push(utxo_output.output.get(key.1 as usize).unwrap().clone());
-                    prev_txns.insert(key.0.to_string(), utxos.get(key).unwrap().clone());
-                }
-                None => {
-                    // return with an impossible message to user
-                    let error = psbt::Error::NoMorePairs;
-                    return Err(Error::Psbt(error));
-                }
-            }
-        }
-    }
-
-    let psbt = Psbt::from_unsigned_tx(tx.clone())?;
-
-    return Ok(psbt);
-}
-
-pub fn break_multiscript_template(
-    tx: &mut Transaction,
-    change_addr: Option<Address>,
-) -> Result<Psbt> {
-    let change_addr_type = address::Address::address_type(&change_addr.clone().unwrap()).unwrap();
-    let mut new_outputs = Vec::new();
-    #[allow(unused_assignments)]
-    let mut change_output_value: Option<u64> = None;
-    #[allow(unused_assignments)]
-    let mut payment_output: Option<TxOut> = None;
-
-    //clear scriptsig in inputs
-    //We are only doing this because we are using a test
-    //transaction that has scriptsigs.
-    for input in tx.input.iter_mut() {
-        input.script_sig = Script::new();
-        input.witness = Witness::default();
-    }
-
-    if change_addr.clone().unwrap() == script_to_addr(tx.output[0].script_pubkey.clone()) {
-        change_output_value = Some(tx.output[0].value);
-        payment_output = Some(tx.output[1].clone());
-    } else {
-        change_output_value = Some(tx.output[1].value);
-        payment_output = Some(tx.output[0].clone());
-    }
-
-    for output in tx.output.iter_mut() {
-        let output_addr_type =
-            Address::address_type(&script_to_addr(output.script_pubkey.clone())).unwrap();
-        if change_addr_type != output_addr_type {
-            if output_addr_type.to_string() == "p2sh" {
-                let script = Script::new().to_p2sh();
-                let new_change_output = TxOut {
-                    value: change_output_value.unwrap(),
-                    script_pubkey: script,
-                };
-                new_outputs.push(new_change_output.clone());
-                new_outputs.push(payment_output.clone().unwrap());
-            }
-            if output_addr_type.to_string() == "p2wsh" {
-                let script = Script::new().to_v0_p2wsh();
-                let new_change_output = TxOut {
-                    value: change_output_value.unwrap(),
-                    script_pubkey: script,
-                };
-                new_outputs.push(new_change_output.clone());
-                new_outputs.push(payment_output.clone().unwrap());
-            }
-        }
-    }
-
-    tx.output = new_outputs;
-    let psbt = Psbt::from_unsigned_tx(tx.clone())?;
-
-    return Ok(psbt);
-}
-
-pub fn break_address_reuse_template(
-    tx: &mut Transaction,
-    new_addr: Address,
-    analysis_result: &AnalysisResult,
-) -> Result<Psbt> {
-    //figure out the address that is being reused
-    //change reused address with new address
-    //build PSBT from Transaction
-    let outputs = tx.output.clone();
-    let mut new_outputs = Vec::new();
-
-    //clear scriptsig in inputs
-    //We are only doing this because we are using a test
-    //transaction that has scriptsigs.
-    for input in tx.input.iter_mut() {
-        input.script_sig = Script::new();
-    }
-
-    for output in outputs.clone().iter_mut() {
-        if analysis_result.change_addr.clone().unwrap()
-            == script_to_addr(output.script_pubkey.clone())
-        {
-            output.script_pubkey = new_addr.script_pubkey();
-        }
-        new_outputs.push(output.clone());
-    }
-
-    tx.output = new_outputs;
-    let psbt = Psbt::from_unsigned_tx(tx.clone())?;
-
-    return Ok(psbt);
-}
-
 #[cfg(test)]
 mod tests {
 
     use std::str::FromStr;
+
+    use bitcoin::hashes::hex::FromHex;
+
+    use crate::utils::script_to_addr;
 
     use super::*;
     #[test]
@@ -791,10 +326,7 @@ mod tests {
         let mut prev_txns = HashMap::new();
         prev_txns.insert(String::from("4592bdfd2ed6dce6bbaa48ba7e38c13fa53f18ac057341db7ba2dafef2700106"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050282000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
         prev_txns.insert(String::from("19acb0de967acd5afffdb6ab92d4bd81beabfa7a3e1edd79b79ff657e3a1300a"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050285000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
-        
-        // prev_txns.insert(String::from("44141d713c616a49b48f6289d0a94c04498ce84db6106aa81078840a221d0bf5"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050295000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
-        // prev_txns.insert(String::from("b9865cb28d3e17ae4779f6be743a0cd5943240077f8084404ca82c39b5b24bd1"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050288000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
-        // prev_txns.insert(String::from("e20a44743301a90d009aa8a6dd32f95b39bf8cfe4d05ecc957657777e022bb79"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff05029c000101ffffffff0200f90295000000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
+
         let curr_tx_hex = String::from("0200000002060170f2fedaa27bdb417305ac183fa53fc1387eba48aabbe6dcd62efdbd92450000000000ffffffff0a30a1e357f69fb779dd1e3e7afaabbe81bdd492abb6fdff5acd7a96deb0ac190000000000ffffffff020057d347010000001600140931cb36935b8d27010bb7892eb2501ea62af71000286bee0000000016001401e1010b82f73a6451eb03543a55b48df2cd372b00000000");
         let curr_tx = decode_txn(curr_tx_hex);
         let analysis_result = check_unnecessary_input(&curr_tx, &prev_txns);
@@ -876,9 +408,7 @@ mod tests {
             result: true,
             details: String::from("Input address reuse in outputs"),
             template: true,
-            change_addr:  Some(
-                Address::from_str("1JFBLogNB1JgRCbXZmzmaiUaDqu5Lsda69").unwrap(),
-            ),
+            change_addr: Some(Address::from_str("1JFBLogNB1JgRCbXZmzmaiUaDqu5Lsda69").unwrap()),
         };
         println!("Analysis result list: {:#?}", analysis_result_list);
 
@@ -946,7 +476,6 @@ mod tests {
 
         prev_txns.insert(String::from("4592bdfd2ed6dce6bbaa48ba7e38c13fa53f18ac057341db7ba2dafef2700106"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050282000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
         prev_txns.insert(String::from("19acb0de967acd5afffdb6ab92d4bd81beabfa7a3e1edd79b79ff657e3a1300a"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050285000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
-        
 
         let mut utxos = HashMap::new();
         utxos.insert(

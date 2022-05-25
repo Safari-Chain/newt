@@ -1,12 +1,17 @@
-use bitcoin::util::address::{ Address};
-use bitcoin::{ Txid };
 use bitcoin::hashes::hex::FromHex;
+use bitcoin::util::address::Address;
+use bitcoin::Txid;
 use clap::Parser;
+
 use newt::{
-    break_address_reuse_template, break_multiscript_template, break_unnecessary_input_template,
-    check_address_reuse, check_common_input_ownership, check_equaloutput_coinjoin,
-    check_multi_script, check_round_number, check_unnecessary_input, decode_txn,
+    address_reuse::{break_address_reuse_template, check_address_reuse},
+    common_input_ownership::check_common_input_ownership,
+    equal_output_coinjoin::check_equaloutput_coinjoin,
+    multiscript::{break_multiscript_template, check_multi_script},
+    roundnumber::check_round_number,
     transaction_analysis,
+    unnecessary_inputs::{break_unnecessary_input_template, check_unnecessary_input},
+    utils::decode_txn,
 };
 use std::collections::HashMap;
 use std::str::FromStr;
@@ -139,7 +144,6 @@ fn main() {
 
         prev_txns.insert(String::from("4592bdfd2ed6dce6bbaa48ba7e38c13fa53f18ac057341db7ba2dafef2700106"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050282000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
         prev_txns.insert(String::from("19acb0de967acd5afffdb6ab92d4bd81beabfa7a3e1edd79b79ff657e3a1300a"), String::from("020000000001010000000000000000000000000000000000000000000000000000000000000000ffffffff050285000101ffffffff0200f2052a010000001600147a690d45185ebe54967f0735c48c48e86835932a0000000000000000266a24aa21a9ede2f61c3f71d1defd3fa999dfa36953755c690689799962b48bebd836974e8cf90120000000000000000000000000000000000000000000000000000000000000000000000000"));
-        
 
         let mut utxos = HashMap::new();
         utxos.insert(
@@ -180,24 +184,3 @@ fn main() {
         println!("{:#?}", psbt);
     }
 }
-
-/*
-accept comands from the user in the terminal
-print the result to the console
-commands to accept include:
-1. command for each heuristic e.g. cargo run --multiscript
-(a) multiscript
-    cargo run --multiscript transaction-hex
-(b) address-reuse
-    cargo run --addressreuse transaction-hex
-(c) round-number
-    cargo run --roundnumber transaction-hex
-(d) equal-output coinjoin
-    cargo run --coinjoin transaction-hex
-(e) unnecessary inputs
-    cargo run --unnecessaryinputs transaction-hex
-(f) common input ownership
-    cargo run --commonownership transaction-hex
-2. command for all heuristics (transaction analysis)
-3. command for generating transaction template
-*/
